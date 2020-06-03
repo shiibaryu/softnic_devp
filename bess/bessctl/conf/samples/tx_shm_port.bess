@@ -1,0 +1,5 @@
+bess.add_worker(wid=0,core=0)
+TxShmPort1() -> Sink()
+TxShmPort2() -> Sink()
+TxShmPort3() -> Sink()
+TxShmPort4() -> Sink()
