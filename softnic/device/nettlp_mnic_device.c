@@ -98,7 +98,6 @@ void *mnic_tx(void *arg)
 			num += DESC_ENTRY_SIZE;
 		}
 
-		wait_bess(mnic->tx_sem_id[offset],mnic->tx_sem[offset]);
 
 		for(i=0;i<num;i++){
 			//info("tx tail idx %d, tx head idx %d",txd_ctl->tx_tail_idx, txd_ctl->tx_head_idx);
@@ -138,6 +137,8 @@ tx_done:
 
 		info("nwrite num is %d",num_wr[0]);
 		mnic->tx_sem[offset].array = num_wr;
+
+		wait_bess(mnic->tx_sem_id[offset],mnic->tx_sem[offset]);
 		semctl(mnic->tx_sem_id[offset],0,SETALL,mnic->tx_sem[offset]);
 
 		//3. generate a tx interrupt
