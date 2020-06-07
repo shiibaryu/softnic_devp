@@ -11,13 +11,16 @@
 
 #define BAR4_RX_DESC_BASE	24
 #define BAR4_RX_DESC_PTR	56
-#define BAR4_TX_PKT_ADDR	88
-#define BAR4_TX_PKT_LEN		120
+#define BAR4_TX_PKT_ADDR	64
+#define BAR4_TX_PKT_LEN		72
 
 #define RX_BASE_SUM	32
 
 #define TX_NT_SIZE 	4
 #define RX_NT_SIZE 	4
+
+#define MRRS	1550
+#define MPS	1550
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -29,17 +32,14 @@
 	(a - bar4 <= BAR4_RX_DESC_PTR)
 
 #define is_mwr_addr_tx_pkt_addr(bar4,a)		\
-	(a - bar4 <= BAR4_TX_PKT_ADDR)
+	((a - bar4 - BAR4_TX_PKT_ADDR)%16 == 0)
 
 #define is_mwr_addr_tx_pkt_len(bar4,a)		\
-	(a - bar4 <= BAR4_TX_PKT_LEN)
+	((a - bar4 - BAR4_TX_PKT_LEN)%16 == 0)
 
 struct tx_desc_ctl{
 	uint32_t head;
-	uintptr_t desc_head;
 	uint32_t tail;
-	uintptr_t desc_tail;
-	unsigned char *buf;
 };
 
 struct rx_desc_ctl{
