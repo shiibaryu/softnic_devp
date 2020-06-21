@@ -8,6 +8,7 @@
 #include "../utils/ip.h"
 #include "../utils/udp.h"
 
+#include "nettlp_shm.h"
 #include "rx_shm_port2.h"
 
 #define RX_SHM_PATH "/rx_shm_port2"
@@ -28,7 +29,7 @@ union semun{
 	int val;
 	struct semid_ds *buf;
 	unsigned short int *array;
-	struct seminfo *__buf;
+	struct seminfo *_buf;
 };
 union semun rx_sem2;
 unsigned short set_val2[1];
@@ -73,6 +74,7 @@ CommandResponse RxShmPort2::Init(const bess::pb::EmptyArg &)
 	close(fd);
 
 	rx_shmc2.sem_id = semget(RX_KEY_VAL,1,0666 | IPC_CREAT);
+	LOG(INFO) << "sem id 2 " << rx_shmc2.sem_id;
 	if(rx_shmc2.sem_id == -1){
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
@@ -106,33 +108,51 @@ CommandResponse RxShmPort2::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
+char *shm2 = rx_shmc2.buf;
 void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
-	char *data;
+	//char *data;
 	bess::Packet *pkt;
-	char *shm = rx_shmc2.buf;
+	struct rx_shmq rxsq;
+
+	pktlen = 0;
 
 	cnt = batch->cnt();
 	for(i=0;i<cnt;i++){
 		//just wait
 		while(semctl(rx_shmc2.sem_id,0,GETVAL,rx_sem2) != 0){}
+		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
-		pktlen = pkt->total_len();
-		data = pkt->head_data<char *>();
-		memcpy(shm,data,pktlen);
-		LOG(INFO) << "rx done: write pkt to shm";
-		shm+= 1500;
+		pktlen = pkt->data_len();
+		if(pktlen > 0){
+			rxsq.length = pktlen;
+			LOG(INFO) << "pktlen " << pktlen;
+			//data = pkt->head_data<char *>();
+			memcpy(rxsq.data,pkt->head_data(),pktlen);
+			memcpy(rx_shmc2.buf,&rxsq,sizeof(struct rx_shmq));
+			LOG(INFO) << "rx done: write pkt to shm";
+			shm2 += sizeof(rxsq);
+		}
 	}
-	set_val2[0] = cnt;
-	rx_sem2.array = set_val2;
-	semctl(rx_shmc2.sem_id,0,SETALL,rx_sem2);
+	if(cnt && pktlen > 0){
+		set_val2[0] = cnt;
+		rx_sem2.array = set_val2;
+		LOG(INFO) << "semavl is " << cnt;
+		if(semctl(rx_shmc2.sem_id,0,SETALL,rx_sem2)==-1){
+			LOG(INFO) << "errrrrr";
+		}
+	}
 }
 
 void RxShmPort2::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
 {
-	WritePkt(batch);
+	if(batch->cnt() > 0){
+		LOG(INFO) << "process batch";
+		WritePkt(batch);
+	}
 	if(ctx){}
+	LOG(INFO) << "process batch";
 }
 
 ADD_MODULE(RxShmPort2,"rx_shm_port2","communication port for shared memory")

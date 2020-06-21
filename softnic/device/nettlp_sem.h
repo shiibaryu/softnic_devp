@@ -35,6 +35,7 @@ static void wait_bess(int tx_sem_id, union semun tx_sem)
 static void poll_sem(int *semval)
 {
 	while(*semval == 0){}
+	printf("yesss\n");
 }
 
 #endif

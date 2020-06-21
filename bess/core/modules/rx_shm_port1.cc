@@ -8,6 +8,7 @@
 #include "../utils/ip.h"
 #include "../utils/udp.h"
 
+#include "nettlp_shm.h"
 #include "rx_shm_port1.h"
 
 #define RX_SHM_PATH "/rx_shm_port1"
@@ -28,7 +29,7 @@ union semun{
 	int val;
 	struct semid_ds *buf;
 	unsigned short int *array;
-	struct seminfo *__buf;
+	struct seminfo *_buf;
 };
 union semun rx_sem1;
 unsigned short set_val[1];
@@ -50,6 +51,7 @@ CommandResponse RxShmPort1::Init(const bess::pb::EmptyArg &)
 {
 	int fd,ret;
 	int mem_size = RX_SHM_SIZE;
+
 	memset(&rx_shmc1,0,sizeof(rx_shmc1));
 
 	fd = shm_open(RX_SHM_PATH,O_RDWR,0);
@@ -73,6 +75,7 @@ CommandResponse RxShmPort1::Init(const bess::pb::EmptyArg &)
 	close(fd);
 
 	rx_shmc1.sem_id = semget(RX_KEY_VAL,1,0666 | IPC_CREAT);
+	LOG(INFO) << "sem id 1 " << rx_shmc1.sem_id;
 	if(rx_shmc1.sem_id == -1){
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
@@ -106,32 +109,50 @@ CommandResponse RxShmPort1::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
+char *shm1 = rx_shmc1.buf;
 void RxShmPort1::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
-	char *data;
-	bess::Packet *pkt;
-	char *shm = rx_shmc1.buf;
+	//char *data;
+	bess::Packet *pkt; 
+	struct rx_shmq rxsq;
+
+	pktlen = 0;
 
 	cnt = batch->cnt();
 	for(i=0;i<cnt;i++){
-		//just wait
 		while(semctl(rx_shmc1.sem_id,0,GETVAL,rx_sem1) != 0){}
+		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
-		pktlen = pkt->total_len();
-		data = pkt->head_data<char *>();
-		memcpy(shm,data,pktlen);
-		LOG(INFO) << "rx done: write pkt to shm";
-		shm+= 1500;
+		pktlen = pkt->data_len();
+		if(pktlen > 0){
+			rxsq.length = pktlen;
+			LOG(INFO) << "pktlen " << pktlen;
+			//data = pkt->head_data<char *>();
+			memcpy(rxsq.data,pkt->head_data(),pktlen);
+			memcpy(rx_shmc1.buf,&rxsq,sizeof(rxsq));
+			LOG(INFO) << "rx done: write pkt to shm";
+			shm1 += sizeof(rxsq);
+		}
 	}
-	set_val[0] = cnt;
-	rx_sem1.array = set_val;
-	semctl(rx_shmc1.sem_id,0,SETALL,rx_sem1);
+	if(pktlen > 0 && cnt){
+		set_val[0] = cnt;
+		rx_sem1.array = set_val;
+		LOG(INFO) << "semavl is " << cnt;
+
+		if(semctl(rx_shmc1.sem_id,0,SETALL,rx_sem1)==-1){
+			LOG(INFO) << "errrrrr";
+		}
+
+	}
 }
 
 void RxShmPort1::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
 {
-	WritePkt(batch);
+	if(batch->cnt() > 0){
+		LOG(INFO) << "process batch";
+		WritePkt(batch);
+	}
 	if(ctx){}
 }
 

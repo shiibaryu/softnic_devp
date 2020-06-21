@@ -1,4 +1,0 @@
-Sink() -> RxShmPort1()
-Sink() -> RxShmPort2()
-Sink() -> RxShmPort3()
-Sink() -> RxShmPort4()

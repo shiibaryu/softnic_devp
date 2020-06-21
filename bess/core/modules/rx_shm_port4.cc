@@ -8,6 +8,7 @@
 #include "../utils/ip.h"
 #include "../utils/udp.h"
 
+#include "nettlp_shm.h"
 #include "rx_shm_port4.h"
 
 #define RX_SHM_PATH "/rx_shm_port4"
@@ -28,7 +29,7 @@ union semun{
 	int val;
 	struct semid_ds *buf;
 	unsigned short int *array;
-	struct seminfo *__buf;
+	struct seminfo *_buf;
 };
 union semun rx_sem4;
 unsigned short set_val4[1];
@@ -73,6 +74,7 @@ CommandResponse RxShmPort4::Init(const bess::pb::EmptyArg &)
 	close(fd);
 
 	rx_shmc4.sem_id = semget(RX_KEY_VAL,1,0666 | IPC_CREAT);
+	LOG(INFO) << "sem id 4 " << rx_shmc4.sem_id;
 	if(rx_shmc4.sem_id == -1){
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
@@ -106,32 +108,51 @@ CommandResponse RxShmPort4::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
+char *shm4 = rx_shmc4.buf;
 void RxShmPort4::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
-	char *data;
+	//char *data;
 	bess::Packet *pkt;
-	char *shm = rx_shmc4.buf;
+	struct rx_shmq rxsq;
+
+	pktlen = 0;
 
 	cnt = batch->cnt();
+	LOG(INFO) << "cnt is " << cnt;
 	for(i=0;i<cnt;i++){
-		//just wait
+		LOG(INFO) << "wait for mnic";
 		while(semctl(rx_shmc4.sem_id,0,GETVAL,rx_sem4) != 0){}
+		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
-		pktlen = pkt->total_len();
-		data = pkt->head_data<char *>();
-		memcpy(shm,data,pktlen);
-		LOG(INFO) << "rx done: write pkt to shm";
-		shm+= 1500;
+		pktlen = pkt->data_len();
+		if(pktlen > 0){
+			rxsq.length = pktlen;
+			LOG(INFO) << "pktlen " << pktlen;
+			//data = pkt->head_data<char *>();
+			memcpy(rxsq.data,pkt->head_data(),pktlen);
+			memcpy(rx_shmc4.buf,&rxsq,sizeof(struct rx_shmq));
+			LOG(INFO) << "rx done: write pkt to shm";
+			shm4 += sizeof(rxsq);
+		}
 	}
-	set_val4[0] = cnt;
-	rx_sem4.array = set_val4;
-	semctl(rx_shmc4.sem_id,0,SETALL,rx_sem4);
+	if(cnt && pktlen > 0){
+		set_val4[0] = cnt;
+		rx_sem4.array = set_val4;
+		LOG(INFO) << "semavl is " << cnt;
+		LOG(INFO) << "sem id is " << rx_shmc4.sem_id;
+		if(semctl(rx_shmc4.sem_id,0,SETALL,rx_sem4)==-1){
+			LOG(INFO) << "errrrrr";
+		}
+	}
 }
 
 void RxShmPort4::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
 {
-	WritePkt(batch);
+	if(batch->cnt() > 0){
+		WritePkt(batch);
+		LOG(INFO) << "process batch";
+	}
 	if(ctx){}
 }
 

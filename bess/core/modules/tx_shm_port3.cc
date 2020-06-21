@@ -39,8 +39,7 @@ const Commands TxShmPort3::cmds = {
 		Command::THREAD_UNSAFE}};
 
 union semun sem3;
-struct shm_conf shmc3;
-//sembuf ops[2];
+struct tx_shm_conf shmc3;
 
 void TxShmPortThread3::Run()
 {
@@ -92,6 +91,7 @@ CommandResponse TxShmPort3::Init(const bess::pb::EmptyArg &)
 	close(fd);
 
 	shmc3.sem_id = semget(key,1,0666 | IPC_CREAT);
+	LOG(INFO) << "sem id 3 " << shmc3.sem_id;
 	if(shmc3.sem_id == -1){
 		return CommandFailure(errno,"failed to semget()");
 	}
@@ -197,16 +197,28 @@ void TxShmPort3::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 
 		ipv4  = (struct ipv4 *)(pkt + sizeof(*eth));
 		b_ip = reinterpret_cast<Ipv4 *>(b_eth + 1);
-		b_ip->src = be32_t(ipv4->src_ip.s_addr);
-		b_ip->dst = be32_t(ipv4->dst_ip.s_addr);
-		b_ip->version = (((ipv4)->version & 0x0f) >> 4);
-		b_ip->header_length = ((ipv4)->ihl & 0x0f);
+
+		b_ip->src = be32_t(ntohl(ipv4->src_ip.s_addr));
+		b_ip->dst = be32_t(ntohl(ipv4->dst_ip.s_addr));
+		LOG(INFO) << " " << ToIpv4Address(b_ip->src);
+		LOG(INFO) << " " << ToIpv4Address(b_ip->dst);
+
+		b_ip->version = 4;
+		//b_ip->version = ipv4->version;
+		b_ip->header_length = ipv4->ihl;
+		//b_ip->version = (((ipv4)->version & 0x0f) >> 4);
+		//b_ip->header_length = ((ipv4)->ihl & 0x0f);
 		b_ip->type_of_service = ipv4->tos;
 		b_ip->length = be16_t(ntohs(ipv4->tot_len));
 		b_ip->fragment_offset = be16_t(ntohs(ipv4->frag_off));
 		b_ip->ttl = ipv4->ttl;
 		b_ip->protocol = ipv4->protocol;
-		b_ip->checksum =  0;
+		b_ip->checksum =  ipv4->check;
+		//b_ip->checksum =  ntohs(ipv4->check);
+
+		LOG(INFO) << "Ipv" << b_ip->version;
+		LOG(INFO) << "length" << b_ip->length;
+		LOG(INFO) << "fragment off" << b_ip->fragment_offset;
 
 		header_size += b_ip->header_length;
 
@@ -231,9 +243,10 @@ void TxShmPort3::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			b_icmp = reinterpret_cast<Icmp *>(b_ip + 1);
 			b_icmp->type = icmp->type;
 			b_icmp->code = icmp->code;
-			b_icmp->ident = be16_t(icmp->message.echo.id);
-			b_icmp->seq_num = be16_t(icmp->message.echo.sequence);
-			b_icmp->checksum = 0;
+			b_icmp->ident = be16_t(ntohs(icmp->message.echo.id));
+			b_icmp->seq_num = be16_t(ntohs(icmp->message.echo.sequence));
+			b_icmp->checksum = icmp->checksum;
+			//b_icmp->checksum = ntohs(icmp->checksum);
 
 			header_size += ICMP_HDR_SIZE;
 			//b_pkt->set_data_len(txsq->length-header_size);
@@ -349,7 +362,7 @@ struct task_result TxShmPort3::RunTask(Context *ctx, bess::PacketBatch *batch, v
 			shmc3.current += sizeof(struct tx_shmq);
 			shmc3.idx++;
 
-			if(shmc3.idx == DESC_ENTRY_SIZE){
+			if(shmc3.idx == DESC_ENTRY_SIZE-1){
 				shmc3.idx = 0;
 				shmc3.current = shmc3.buf;
 			}

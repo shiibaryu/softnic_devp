@@ -14,19 +14,15 @@
 #include <linux/netdevice.h>
 #include <linux/ipv6.h>
 #include <linux/slab.h>
-#include <net/checksum.h>
-#include <net/ip6_checksum.h>
 #include <linux/net_tstamp.h>
 #include <linux/ethtool.h>
 #include <linux/if.h>
 #include <linux/if_vlan.h>
-#include <linux/pci-aspm.h>
 #include <linux/interrupt.h>
 #include <linux/ip.h>
 #include <linux/aer.h>
 #include <linux/prefetch.h>
 #include <linux/pm_runtime.h>
-#include <linux/overflow.h>
 
 #include "nettlp_msg.h"
 #include <nettlp_mnic.h>
@@ -39,6 +35,7 @@
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV | NETIF_MSG_PROBE | NETIF_MSG_LINK)
 
 static int debug = -1;
+static int tx_untreated = 0;
 
 static int nettlp_mnic_init(struct net_device *ndev)
 {
@@ -613,6 +610,7 @@ static int mnic_poll(struct napi_struct *napi,int budget)
 
 	if(q_vector->tx.ring){
 		pr_info("%s:go to clean tx irq",__func__);
+		tx_untreated -= budget;
 		clean_complete = mnic_clean_tx_irq(q_vector,budget);
 	}
 	if(q_vector->rx.ring){
@@ -784,7 +782,6 @@ static inline int mnic_maybe_stop_tx(struct mnic_ring *ring,const uint16_t size)
 
 static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,const uint8_t hdr_len,struct mnic_adapter *adapter)
 {
-	uint8_t t = 0;
 	struct sk_buff *skb = first->skb;
 	struct mnic_tx_buffer *tx_buff = NULL;
 	struct descriptor *tx_desc,*tx_desc_prev;
@@ -795,7 +792,6 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 	uint32_t pktlen = skb->len;
 	unsigned int size,data_len;
 
-	t = i;
 	tx_desc_prev = MNIC_TX_DESC(tx_ring,i);
 	tx_desc = MNIC_TX_DESC(tx_ring,i);
 
@@ -827,8 +823,17 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 		dma_unmap_len_set(tx_buff,len,size);
 		dma_unmap_addr_set(tx_buff,dma,dma);
 	
+		dma_wmb();
+
+		adapter->bar4->tx_pkt[q_idx].addr = dma;
+		adapter->bar4->tx_pkt[q_idx].length = pktlen;
+		tx_untreated++;
+
 		tx_desc->addr = dma;
 		tx_desc->length = pktlen;
+
+		adapter->ndev->stats.tx_packets++;
+		adapter->ndev->stats.tx_bytes += pktlen;
 		
 		while(unlikely(size > MNIC_MAX_DATA_PER_TXD)){
 			i++;
@@ -842,7 +847,14 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 			dma += MNIC_MAX_DATA_PER_TXD;
 			size -= MNIC_MAX_DATA_PER_TXD;
 
-			tx_desc->addr = cpu_to_le64(dma);
+			adapter->bar4->tx_pkt[q_idx].addr = dma;
+			adapter->bar4->tx_pkt[q_idx].length = skb->len;
+			tx_untreated++;
+
+			adapter->ndev->stats.tx_packets++;
+			adapter->ndev->stats.tx_bytes += skb->len;
+
+			tx_desc->addr = dma;
 			tx_desc->length = skb->len;
 		}
 	
@@ -867,8 +879,6 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 		tx_buff = &tx_ring->tx_buf_info[i];
 	}
 
-	dma_wmb();
-
 	first->next_to_watch = tx_desc;
 
 	i++;
@@ -876,20 +886,6 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 		i=0;
 	}
 	tx_ring->next_to_use = i;
-
-	while(t!=i){
-		adapter->bar4->tx_pkt_addr[q_idx] = tx_desc_prev->addr;
-		adapter->bar4->tx_pkt_len[q_idx] = tx_desc_prev->length;
-		tx_desc_prev++;
-		t++;
-		if(t == tx_ring->count){
-			tx_desc_prev = MNIC_TX_DESC(tx_ring,0);
-			t = 0;
-		}
-	}
-
-	adapter->ndev->stats.tx_packets++;
-	adapter->ndev->stats.tx_bytes += pktlen;
 
 	return 0;
 
@@ -998,6 +994,13 @@ static netdev_tx_t mnic_xmit_frame(struct sk_buff *skb,struct net_device *netdev
 {
 	struct mnic_adapter *adapter = netdev_priv(netdev);
 	
+	if(tx_untreated > MNIC_DEFAULT_TXD -1){
+		pr_info("%s:overflow of untreated tx descriptors on NIC",__func__);
+		kfree_skb(skb);
+		skb = NULL;
+		return NETDEV_TX_BUSY;
+	}
+
 	if(skb_put_padto(skb,17)){
 		return NETDEV_TX_OK;
 	}

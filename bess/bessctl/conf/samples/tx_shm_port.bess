@@ -1,5 +1,13 @@
 bess.add_worker(wid=0,core=0)
-TxShmPort1() -> Sink()
-TxShmPort2() -> Sink()
-TxShmPort3() -> Sink()
-TxShmPort4() -> Sink()
+
+myport::PMDPort(port_id=0,num_inc_q=4,num_out_q=4)
+
+TxShmPort1() -> QueueOut(port=myport,qid=0)
+TxShmPort2() -> QueueOut(port=myport,qid=1)
+TxShmPort3() -> QueueOut(port=myport,qid=2)
+TxShmPort4() -> QueueOut(port=myport,qid=3)
+
+QueueInc(port=myport,qid=0) -> RxShmPort1()
+QueueInc(port=myport,qid=1) -> RxShmPort2()
+QueueInc(port=myport,qid=2) -> RxShmPort3()
+QueueInc(port=myport,qid=3) -> RxShmPort4()

@@ -8,6 +8,7 @@
 #include "../utils/ip.h"
 #include "../utils/udp.h"
 
+#include "nettlp_shm.h"
 #include "rx_shm_port3.h"
 
 #define RX_SHM_PATH "/rx_shm_port3"
@@ -28,7 +29,7 @@ union semun{
 	int val;
 	struct semid_ds *buf;
 	unsigned short int *array;
-	struct seminfo *__buf;
+	struct seminfo *_buf;
 };
 union semun rx_sem3;
 unsigned short set_val3[1];
@@ -73,6 +74,7 @@ CommandResponse RxShmPort3::Init(const bess::pb::EmptyArg &)
 	close(fd);
 
 	rx_shmc3.sem_id = semget(RX_KEY_VAL,1,0666 | IPC_CREAT);
+	LOG(INFO) << "sem id 3 " << rx_shmc3.sem_id;
 	if(rx_shmc3.sem_id == -1){
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
@@ -106,32 +108,50 @@ CommandResponse RxShmPort3::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
+char *shm3 = rx_shmc3.buf;
 void RxShmPort3::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
-	char *data;
+	//char *data;
 	bess::Packet *pkt;
-	char *shm = rx_shmc3.buf;
+	struct rx_shmq rxsq;
+
+	pktlen = 0;
 
 	cnt = batch->cnt();
 	for(i=0;i<cnt;i++){
 		//just wait
 		while(semctl(rx_shmc3.sem_id,0,GETVAL,rx_sem3) != 0){}
+		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
-		pktlen = pkt->total_len();
-		data = pkt->head_data<char *>();
-		memcpy(shm,data,pktlen);
-		LOG(INFO) << "rx done: write pkt to shm";
-		shm+= 1500;
+		pktlen = pkt->data_len();
+		if(pktlen > 0){
+			rxsq.length = pktlen;
+			LOG(INFO) << "pktlen " << pktlen;
+			//data = pkt->head_data<char *>();
+			memcpy(rxsq.data,pkt->head_data(),pktlen);
+			memcpy(rx_shmc3.buf,&rxsq,sizeof(struct rx_shmq));
+			LOG(INFO) << "rx done: write pkt to shm";
+			shm3 += sizeof(rxsq);
+		}
 	}
-	set_val3[0] = cnt;
-	rx_sem3.array = set_val3;
-	semctl(rx_shmc3.sem_id,0,SETALL,rx_sem3);
+	if(cnt && pktlen > 0){
+		set_val3[0] = cnt;
+		rx_sem3.array = set_val3;
+		LOG(INFO) << "semavl is " << cnt;
+		if(semctl(rx_shmc3.sem_id,0,SETALL,rx_sem3)==-1){
+			LOG(INFO) << "errrrrr";
+		}
+	}
+
 }
 
 void RxShmPort3::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
 {
-	WritePkt(batch);
+	if(batch->cnt() > 0){
+		WritePkt(batch);
+		LOG(INFO) << "process batch";
+	}
 	if(ctx){}
 }
 

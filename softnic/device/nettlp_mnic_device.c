@@ -54,7 +54,7 @@ void signal_handler(int signal)
 	}
 
 	for(i=0;i<RX_QUEUES;i++){
-		snprintf(path,256,"rx%d_shm_port",i+1);
+		snprintf(path,256,"rx_shm_port%d",i+1);
 		if(shm_unlink(path) == -1){
 			debug("failed tp unlink rx %d shm path",i);
 		}
@@ -98,19 +98,12 @@ void *mnic_tx(void *arg)
 			num += DESC_ENTRY_SIZE;
 		}
 
-		wait_bess(mnic->tx_sem_id[offset],mnic->tx_sem[offset]);
-
 		for(i=0;i<num;i++){
-			//info("tx tail idx %d, tx head idx %d",txd_ctl->tx_tail_idx, txd_ctl->tx_head_idx);
-			//info("tx descriptor: packet address is %#lx, packet length is %lu",tx_desc->addr,tx_desc->length);
-			//info("offset is %d",offset);
 
 			txsq.length = tx_desc->length;
-			info("txsq.length %d",txsq.length);
-			ret = dma_read(&mnic->tx_nt[offset],tx_desc->addr,txsq.data,tx_desc->length);
+			ret = dma_read_aligned(&mnic->tx_nt[offset],tx_desc->addr,txsq.data,tx_desc->length,MRRS);
 			if(ret < tx_desc->length){
 				debug("failed to read tx pkt from %#lx, %lu-byte",tx_desc->addr,tx_desc->length);
-				//buf = NULL;
 			}
 
 			if(txsq.data == NULL){
@@ -126,22 +119,20 @@ tx_done:
 			num_wr[0]++;
 			txd_ctl->head++;
 			shm += sizeof(struct tx_shmq);
-			info("shm addr is %p",shm);
 
 			if(txd_ctl->head > DESC_ENTRY_SIZE - 1){
 				txd_ctl->head = 0;
 				tx_desc = mnic->tx_desc[offset];
 				shm = mnic->tx_shm[offset];
-				//buf = (mnic->tx_desc_ctl + offset)->buf;
 			}
 		}
 
 		info("nwrite num is %d",num_wr[0]);
 		mnic->tx_sem[offset].array = num_wr;
+
+		wait_bess(mnic->tx_sem_id[offset],mnic->tx_sem[offset]);
 		semctl(mnic->tx_sem_id[offset],0,SETALL,mnic->tx_sem[offset]);
 
-		//3. generate a tx interrupt
-		//info("generate a tx interrupt");
 		ret = dma_write(&mnic->tx_nt[offset],tx_irq->addr,&tx_irq->data,sizeof(tx_irq->data));
 		if(ret < 0){
 			fprintf(stderr,"failed to send tx interrupt\n");
@@ -154,7 +145,7 @@ tx_done:
 	pthread_join(txc->tid,NULL);
 }
 
-void mnic_rx(uint32_t idx,struct nettlp *nt,struct nettlp_mnic *mnic,unsigned int offset)
+void mnic_rx(uint64_t idx,struct nettlp *nt,struct nettlp_mnic *mnic,unsigned int offset)
 {
 	int ret;
 	struct descriptor *rx_desc = mnic->rx_desc[offset];
@@ -197,74 +188,63 @@ static inline unsigned int get_bar4_rxt_offset(uintptr_t start,uintptr_t receive
 static inline unsigned int get_bar4_tx_pkt_addr_offset(uintptr_t start,uintptr_t received)
 {
 	unsigned int offset;
-	offset =  (received - start - (BAR4_RX_DESC_PTR+8))/8;
+	offset =  (received - start - (BAR4_TX_PKT_ADDR))/16;
 	return offset;
 }
 
 static inline unsigned int get_bar4_tx_pkt_len_offset(uintptr_t start,uintptr_t received)
 {
 	unsigned int offset;
-	offset =  (received - start - (BAR4_TX_PKT_ADDR+8))/8;
+	offset =  (received - start - (BAR4_TX_PKT_LEN))/16;
 	return offset;
 }
 
-int nettlp_mnic_mwr(struct nettlp *nt,struct tlp_mr_hdr *mh,void *m,size_t count,void *arg)
+int nettlp_mnic_mwr(struct nettlp *nt,struct tlp_mr_hdr *mh,void *data,size_t count,void *arg)
 {
+	uint64_t *d;
 	unsigned int offset;
-	uint32_t idx;
-	uint64_t addr;
-	uint64_t len;
 	struct nettlp_mnic *mnic = arg;
 	uintptr_t dma_addr;
 
 	dma_addr = tlp_mr_addr(mh);
-	//info("dma addr is %#lx, base addr is %#lx",dma_addr,mnic->bar4_start);
 	
 	if(is_mwr_addr_rx_desc_base(mnic->bar4_start,dma_addr)){
 		uintptr_t *rxd_base = mnic->rx_desc_base + mnic->rx_queue_id;
 		struct rx_desc_ctl *rxd_ctl = mnic->rx_desc_ctl + mnic->rx_queue_id;
-		memcpy(rxd_base,m,8);
+		*rxd_base = *((uintptr_t *)data);
 		rxd_ctl->desc_head = *rxd_base;
 		rxd_ctl->desc_tail = *rxd_base;
 		info("Queue %d: RX desc base is %lx, queue id is %d",mnic->rx_queue_id,*rxd_base,mnic->rx_queue_id);
 		mnic->rx_queue_id++;
 	}
 	else if(is_mwr_addr_rx_desc_ptr(mnic->bar4_start,dma_addr)){
+		d = (uint64_t *)data;
 		offset = get_bar4_rxt_offset(mnic->bar4_start,dma_addr);
-		memcpy(&idx,m,sizeof(idx));
-		mnic_rx(idx,nt,mnic,offset);
+		mnic_rx(*d,nt,mnic,offset);
+		info("rx state is %d",mnic->rx_state[offset]);
 	}
 	else if(is_mwr_addr_tx_pkt_addr(mnic->bar4_start,dma_addr)){
-		struct tx_desc_ctl *txd_ctl;
 		struct descriptor *tx_desc;
 
+		d = (uint64_t *)data;
 		offset = get_bar4_tx_pkt_addr_offset(mnic->bar4_start,dma_addr);
-		memcpy(&addr,m,8);
-		tx_desc = mnic->tx_desc[offset];
-		txd_ctl = mnic->tx_desc_ctl + offset;
-		tx_desc += txd_ctl->tail;
-		tx_desc->addr = addr;
+		tx_desc = mnic->tx_desc[offset] + (mnic->tx_desc_ctl + offset)->tail;
+		tx_desc->addr = *d;
 	}
 	else if(is_mwr_addr_tx_pkt_len(mnic->bar4_start,dma_addr)){
-		struct tx_desc_ctl *txd_ctl;
 		struct descriptor *tx_desc;
 
+		d = (uint64_t *)data;
 		offset = get_bar4_tx_pkt_len_offset(mnic->bar4_start,dma_addr);
-		memcpy(&len,m,8);
-		tx_desc = mnic->tx_desc[offset];
-		txd_ctl = mnic->tx_desc_ctl + offset;
-		tx_desc += txd_ctl->tail;
-		tx_desc->length = len;
+		tx_desc = mnic->tx_desc[offset] + (mnic->tx_desc_ctl + offset)->tail;
+		tx_desc->length = *d;
 		
-		if(txd_ctl->tail != DESC_ENTRY_SIZE - 1){
-			txd_ctl->tail++;
+		if((mnic->tx_desc_ctl + offset)->tail != DESC_ENTRY_SIZE - 1){
+			(mnic->tx_desc_ctl + offset)->tail++;
 		}
 		else{
-			txd_ctl->tail = 0;
+			(mnic->tx_desc_ctl + offset)->tail = 0;
 		}
-	}
-	else{
-		debug("else");
 	}
 
 	return 0;
@@ -273,42 +253,58 @@ int nettlp_mnic_mwr(struct nettlp *nt,struct tlp_mr_hdr *mh,void *m,size_t count
 /*actual rx part*/
 void *nettlp_mnic_shm_read_thread(void *arg)
 {
-	int i,ret,semval;
-	//struct rx_shm_desc rxs_desc;
+	int i,ret,semval,idx;
+	union semun rx_sem;
+	unsigned short clr[1];
 	struct rx_shmq rxsq;
 	struct rx_shm_ctl *rx_shm_ctl = arg;
-	//char buf[4096];
 	uintptr_t rxd_addr;
 	uintptr_t *rx_desc_base = rx_shm_ctl->desc_base;
 	int sem_id = rx_shm_ctl->sem_id;
 	char *shm = rx_shm_ctl->shm;
-	union semun *rx_sem = rx_shm_ctl->semu;
+	//union semun rx_sem = rx_shm_ctl->semu;
 	int *rx_state = rx_shm_ctl->state;
 	struct descriptor *rx_desc = rx_shm_ctl->desc;
 	struct nettlp_msix *rx_irq = rx_shm_ctl->irq;
 	struct rx_desc_ctl *rxd_ctl = rx_shm_ctl->desc_ctl;
 	struct nettlp *rx_nt = rx_shm_ctl->nt;
 
+	info("semid is %d",sem_id);
+	clr[0] = 0;
+	idx = rx_shm_ctl->idx;
+	rx_sem = rx_shm_ctl->semu[idx];
+
 	while(1){
 		if(caught_signal){
 			break;
 		}
 		
-		semval = semctl(sem_id,0,GETALL,rx_sem);
-		poll_sem(&semval);
+		semval = semctl(sem_id,0,GETVAL,rx_sem);
+		if(semval <= 0){
+			continue;
+		}
 
 		if(*rx_state != RX_STATE_READY){
 			info("rx_state is not ready");
 		}
 
+		info("semval is %d",semval);
+
 		for(i=0;i<semval;i++){
+
+			memcpy(&rxsq,shm,sizeof(struct rx_shmq));
+			info("rx shm queue copy");
+			info("length is %d",rxsq.length);
+
+			if(rxsq.length <= 0 || *rx_state != RX_STATE_READY){
+				continue;
+			}
+
 			*rx_state = RX_STATE_BUSY;
 			rxd_addr = rxd_ctl->desc_head;
-
-			//memcpy(buf,shm,1500);
-			memcpy(&rxsq,shm,sizeof(struct rx_shmq));
+			info("rx shm queue copy done ");
 		
-			ret = dma_write(rx_nt,rx_desc->addr,rxsq.data,rxsq.length);
+			ret = dma_write_aligned(rx_nt,rx_desc->addr,rxsq.data,rxsq.length,MPS);
 			if(ret < 0){
 				debug("buf to rx_desc: failed to dma_write to %lx",rx_desc->addr);
 				continue;
@@ -328,7 +324,7 @@ void *nettlp_mnic_shm_read_thread(void *arg)
 			}
 		
 			rx_desc++;
-			shm += sizeof(struct rx_shmq);
+			//shm += sizeof(struct rx_shmq);
 			rxd_ctl->desc_head += sizeof(struct descriptor);
 			rxd_ctl->head++;
 
@@ -336,14 +332,17 @@ void *nettlp_mnic_shm_read_thread(void *arg)
 				rx_desc = rx_shm_ctl->desc;
 				rxd_ctl->head = 0;
 				rxd_ctl->desc_head = *rx_desc_base;
-				shm = rx_shm_ctl->shm;
+				//shm = rx_shm_ctl->shm;
 			};
 
 			*rx_state = RX_STATE_READY;
 		}
 
+		info("semctl");
+		rx_sem.array = clr;
 		semctl(sem_id,0,SETALL,rx_sem);
-		info("Rx done. mnic received %d packets",i-1);
+		semval = 0;
+		info("Rx done. mnic received %d packets",i);
 	}
 	
 	pthread_join(rx_shm_ctl->tid,NULL);
@@ -353,8 +352,6 @@ void *nettlp_mnic_shm_read_thread(void *arg)
 
 void mnic_alloc(struct nettlp_mnic *mnic)
 {
-	struct tx_desc_ctl *txdp;
-
 	mnic->tx_desc_base = calloc(TX_QUEUES,sizeof(uintptr_t));
 	mnic->rx_desc_base = calloc(RX_QUEUES,sizeof(uintptr_t));
 	mnic->rx_desc_addr = calloc(RX_QUEUES,sizeof(uintptr_t));
@@ -365,12 +362,6 @@ void mnic_alloc(struct nettlp_mnic *mnic)
 	mnic->tx_desc_ctl = calloc(TX_QUEUES,sizeof(struct tx_desc_ctl));
 	mnic->rx_desc_ctl = calloc(RX_QUEUES,sizeof(struct rx_desc_ctl));
 
-	txdp = mnic->tx_desc_ctl;
-	for(int i=0;i<TX_QUEUES;i++){
-		txdp->buf = calloc(DESC_ENTRY_SIZE,4096);
-		txdp++;
-	}
-
 	for(int i=0;i<RX_QUEUES;i++){
 		mnic->tx_desc[i] = calloc(DESC_ENTRY_SIZE,sizeof(struct descriptor));
 		mnic->rx_desc[i] = calloc(DESC_ENTRY_SIZE,sizeof(struct descriptor));
@@ -380,7 +371,6 @@ void mnic_alloc(struct nettlp_mnic *mnic)
 void mnic_free(struct nettlp_mnic *mnic)
 {
 	int i;
-	struct tx_desc_ctl *txdp;
 
 	free(mnic->tx_desc_base);
 	free(mnic->rx_desc_base);
@@ -388,12 +378,6 @@ void mnic_free(struct nettlp_mnic *mnic)
 
 	free(mnic->tx_irq);
 	free(mnic->rx_irq);
-
-	txdp = mnic->tx_desc_ctl;
-	for(i=0;i<TX_QUEUES;i++){
-		free(txdp->buf);
-		txdp++;
-	}
 
 	free(mnic->tx_desc_ctl);
 	free(mnic->rx_desc_ctl);
@@ -430,7 +414,7 @@ int rx_shm_alloc(int mem_size,int *fd)
 	char path[256];
 
 	for(i=0;i<RX_QUEUES;i++){
-		snprintf(path,256,"rx%d_shm_port",i+1);
+		snprintf(path,256,"rx_shm_port%d",i+1);
 		fd[i] = shm_open(path,O_RDWR,0);
 		if(fd[i] == -1){
 			fd[i] = shm_open(path,O_CREAT | O_EXCL | O_RDWR,0600);
@@ -477,6 +461,7 @@ int sem_conf(struct nettlp_mnic *mnic)
 	}
 
 	for(i=0;i<RX_QUEUES;i++){
+		info("key is %d",key);
 		mnic->rx_sem_id[i] = semget(key,1,sem_flags | IPC_CREAT);
 		rxsemid[i] = mnic->rx_sem_id[i];
 		if(mnic->rx_sem_id[i] == -1){
@@ -704,6 +689,7 @@ int main(int argc,char **argv)
 		rx_shm_ctl[i].desc_ctl = mnic.rx_desc_ctl + i;
 		rx_shm_ctl[i].nt = &rx_shm_nt[i];
 		rx_shm_ctl[i].desc_base = mnic.rx_desc_base + i;
+		rx_shm_ctl[i].idx = i;
 
 		if((ret = pthread_create(&rx_shm_ctl[i].tid,NULL,nettlp_mnic_shm_read_thread,&rx_shm_ctl[i])) != 0){
 			debug("%d rx thread failed to be created",i);

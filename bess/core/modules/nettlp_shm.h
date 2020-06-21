@@ -4,7 +4,7 @@
 #define MAX_PKT_NUM	10
 #define DESC_ENTRY_SIZE   256
 
-struct shm_conf{
+struct tx_shm_conf{
 	int sem_id;
 	char *buf;
 	char *current;
