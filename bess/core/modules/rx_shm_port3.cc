@@ -13,7 +13,6 @@
 
 #define RX_SHM_PATH "/rx_shm_port3"
 #define RX_KEY_VAL   	700
-#define RX_SHM_SIZE 	1500*248
 
 using bess::utils::Ethernet;
 using bess::utils::Ipv4;
@@ -40,12 +39,8 @@ enum SEM_OPS{
 	LOCK = 1,
 };
 
-struct shm_conf{
-	int sem_id;
-	char *buf;
-	unsigned short val[1];
-};
-struct shm_conf rx_shmc3;
+struct rx_shm_conf rx_shmc3;
+char *shm3;
 
 CommandResponse RxShmPort3::Init(const bess::pb::EmptyArg &)
 {
@@ -71,6 +66,8 @@ CommandResponse RxShmPort3::Init(const bess::pb::EmptyArg &)
 		return CommandFailure(errno,"failed to mmap for buffer");
 	}
 
+	shm3 = rx_shmc3.buf;
+
 	close(fd);
 
 	rx_shmc3.sem_id = semget(RX_KEY_VAL,1,0666 | IPC_CREAT);
@@ -78,6 +75,8 @@ CommandResponse RxShmPort3::Init(const bess::pb::EmptyArg &)
 	if(rx_shmc3.sem_id == -1){
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
+
+	rx_shmc3.idx = 0;
 	
 	set_val3[0] = 0;
 	rx_sem3.array = set_val3;
@@ -108,7 +107,6 @@ CommandResponse RxShmPort3::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
-char *shm3 = rx_shmc3.buf;
 void RxShmPort3::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
@@ -128,11 +126,18 @@ void RxShmPort3::WritePkt(bess::PacketBatch *batch)
 		if(pktlen > 0){
 			rxsq.length = pktlen;
 			LOG(INFO) << "pktlen " << pktlen;
-			//data = pkt->head_data<char *>();
+
 			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(rx_shmc3.buf,&rxsq,sizeof(struct rx_shmq));
+			memcpy(shm3,&rxsq,sizeof(rxsq));
 			LOG(INFO) << "rx done: write pkt to shm";
+
+			rx_shmc3.idx++;
 			shm3 += sizeof(rxsq);
+
+			if(rx_shmc3.idx > DESC_ENTRY_SIZE - 1){
+				rx_shmc3.idx = 0;
+				shm3 = rx_shmc3.buf;
+			}
 		}
 	}
 	if(cnt && pktlen > 0){
@@ -146,13 +151,12 @@ void RxShmPort3::WritePkt(bess::PacketBatch *batch)
 
 }
 
-void RxShmPort3::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
+void RxShmPort3::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
 		WritePkt(batch);
 		LOG(INFO) << "process batch";
 	}
-	if(ctx){}
 }
 
 ADD_MODULE(RxShmPort3,"rx_shm_port3","communication port for shared memory")

@@ -20,7 +20,6 @@
 
 #define SHM_PATH "/tx3_shm_port"
 #define KEY_VAL		300
-#define TX_SHM_SIZE	1500*256
 
 using namespace bess::utils;
 using bess::utils::Ethernet;
@@ -226,10 +225,13 @@ void TxShmPort3::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			LOG(INFO) << "udp";
 			udp = (struct udp *)(pkt + sizeof(*eth) + sizeof(*ipv4));
 			b_udp = reinterpret_cast<Udp *>(b_ip + 1);
-			b_udp->src_port = be16_t(udp->src_port);
-			b_udp->dst_port = be16_t(udp->dst_port);
-			b_udp->length = be16_t(udp->len);
-			b_udp->checksum = 0;
+			//b_udp->src_port = be16_t(udp->src_port);
+			//b_udp->dst_port = be16_t(udp->dst_port);
+			//b_udp->length = be16_t(udp->len);
+			b_udp->src_port = be16_t(ntohs(udp->src_port));
+			b_udp->dst_port = be16_t(ntohs(udp->dst_port));
+			b_udp->length = be16_t(ntohs(udp->len));
+			b_udp->checksum = udp->check;
 
 			header_size += UDP_HDR_SIZE;
 			//b_pkt->set_data_len(txsq->length-header_size);
@@ -263,14 +265,35 @@ void TxShmPort3::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			b_tcp->dst_port = be16_t(ntohs(tcp->dest));
 			b_tcp->seq_num  = be32_t(ntohl(tcp->seq));
 			b_tcp->ack_num 	= be32_t(ntohl(tcp->ack_seq));
-			b_tcp->reserved = tcp->res1;
+			//b_tcp->reserved = tcp->res1;
+			//b_tcp->offset   = tcp->doff;
+			b_tcp->reserved = ntohs(tcp->res1);
+			//b_tcp->offset   = ntohs(tcp->doff);
 			b_tcp->offset   = tcp->doff;
 			b_tcp->window   = be16_t(ntohs(tcp->window));
-			b_tcp->checksum	= ntohs(tcp->check);
-			b_tcp->flags 	= tcp_flag_word(tcp);
+			//b_tcp->checksum	= ntohs(tcp->check);
+			b_tcp->checksum	= tcp->check;
+			//b_tcp->flags 	= tcp_flag_word(tcp);
 			b_tcp->urgent_ptr  = be16_t(ntohs(tcp->urg_ptr));
+			if(tcp->syn){
+				LOG(INFO) << "syn";
+				b_tcp->flags |= 0x02;
+			}
+			if(tcp->ack){
+				b_tcp->flags |= 0x10;
+			}
+			if(tcp->fin){
+				LOG(INFO) << "fin";
+				b_tcp->flags |= 0x01;
+			}
+			else{
+				LOG(INFO) << "waopfjwapfjewajofaejopaejfop";
+			}
 
 			//b_pkt->set_data_len(txsq->length-header_size);
+			header_size += tcp->doff;
+			LOG(INFO) << "doff is " << tcp->doff;
+			LOG(INFO) << "tcp size is " << header_size;
 
 			return;
 		}
@@ -362,7 +385,7 @@ struct task_result TxShmPort3::RunTask(Context *ctx, bess::PacketBatch *batch, v
 			shmc3.current += sizeof(struct tx_shmq);
 			shmc3.idx++;
 
-			if(shmc3.idx == DESC_ENTRY_SIZE-1){
+			if(shmc3.idx > DESC_ENTRY_SIZE-1){
 				shmc3.idx = 0;
 				shmc3.current = shmc3.buf;
 			}

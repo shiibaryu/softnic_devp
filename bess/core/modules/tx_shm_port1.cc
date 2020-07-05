@@ -20,7 +20,6 @@
 
 #define SHM_PATH "/tx1_shm_port"
 #define KEY_VAL		100
-#define TX_SHM_SIZE	1500*256
 
 using namespace bess::utils;
 using bess::utils::Ethernet;
@@ -102,15 +101,6 @@ CommandResponse TxShmPort1::Init(const bess::pb::EmptyArg &)
 	sem1.array = shmc1.val;
 	semctl(shmc1.sem_id,0,SETALL,sem1);
 
-
-	/*ops[0].sem_num = 0;
-	ops[0].sem_op = STOP;
-	ops[0].sem_flg = SEM_UNDO;
-
-	ops[1].sem_num = 0;
-	ops[1].sem_op = LOCK;
-	ops[1].sem_flg = SEM_UNDO;
-*/
 
 	LOG(INFO) << "Init done";
 	semval = semctl(shmc1.sem_id,0,GETVAL,sem1);
@@ -199,10 +189,7 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 		LOG(INFO) << " " << ToIpv4Address(b_ip->src);
 		LOG(INFO) << " " << ToIpv4Address(b_ip->dst);
 
-		//b_ip->version = (((ipv4)->version & 0x0f) >> 4);
-		//b_ip->version = ipv4->version;
 		b_ip->version = 4;
-		//b_ip->header_length = ((ipv4)->ihl & 0x0f);
 		b_ip->header_length = ipv4->ihl;
 		b_ip->type_of_service = ipv4->tos;
 		b_ip->length = be16_t(ntohs(ipv4->tot_len));
@@ -210,7 +197,6 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 		b_ip->ttl = ipv4->ttl;
 		b_ip->protocol = ipv4->protocol;
 		b_ip->checksum =  ipv4->check;
-		//b_ip->checksum =  ntohs(ipv4->check);
 
 		LOG(INFO) << "Ipv" << b_ip->version;
 		LOG(INFO) << "length" << b_ip->length;
@@ -222,10 +208,13 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			LOG(INFO) << "udp";
 			udp = (struct udp *)(pkt + sizeof(*eth) + sizeof(*ipv4));
 			b_udp = reinterpret_cast<Udp *>(b_ip + 1);
-			b_udp->src_port = be16_t(udp->src_port);
-			b_udp->dst_port = be16_t(udp->dst_port);
-			b_udp->length = be16_t(udp->len);
-			b_udp->checksum = 0;
+			//b_udp->src_port = be16_t(udp->src_port);
+			//b_udp->dst_port = be16_t(udp->dst_port);
+			//b_udp->length = be16_t(udp->len);
+			b_udp->src_port = be16_t(ntohs(udp->src_port));
+			b_udp->dst_port = be16_t(ntohs(udp->dst_port));
+			b_udp->length = be16_t(ntohs(udp->len));
+			b_udp->checksum = udp->check;
 
 			header_size += UDP_HDR_SIZE;
 			//b_pkt->set_data_len(txsq->length-header_size);
@@ -241,12 +230,11 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			b_icmp->code = icmp->code;
 			b_icmp->ident = be16_t(ntohs(icmp->message.echo.id));
 			b_icmp->seq_num = be16_t(ntohs(icmp->message.echo.sequence));
+
 			b_icmp->checksum = icmp->checksum;
-			//b_icmp->checksum = be16_t(ntohs(icmp->checksum));
 
 			header_size += ICMP_HDR_SIZE;
 			LOG(INFO) << "icmp size is " << header_size;
-			//b_pkt->set_data_len(txsq->length-header_size);
 
 			return;
 		}
@@ -263,11 +251,29 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			b_tcp->reserved = tcp->res1;
 			b_tcp->offset   = tcp->doff;
 			b_tcp->window   = be16_t(ntohs(tcp->window));
-			b_tcp->checksum	= ntohs(tcp->check);
-			b_tcp->flags 	= tcp_flag_word(tcp);
+			b_tcp->checksum = tcp->check;
+			//b_tcp->flags 	= tcp_flag_word(tcp);
 			b_tcp->urgent_ptr  = be16_t(ntohs(tcp->urg_ptr));
 
+			if(tcp->syn){
+				LOG(INFO) << "syn";
+				b_tcp->flags |= 0x02;
+			}
+			if(tcp->ack){
+				b_tcp->flags |= 0x10;
+			}
+			if(tcp->fin){
+				LOG(INFO) << "fin";
+				b_tcp->flags = 0x01;
+			}
+			else{
+				LOG(INFO) << "waopfjwapfjewajofaejopaejfop";
+			}
+
 			header_size += tcp->doff;
+			LOG(INFO) << "doff is " << tcp->doff;
+			LOG(INFO) << "tcp size is " << header_size;
+			//header_size += ntohs(tcp->doff);
 			//b_pkt->set_data_len(txsq->length-header_size);
 
 			return;
@@ -360,7 +366,7 @@ struct task_result TxShmPort1::RunTask(Context *ctx, bess::PacketBatch *batch, v
 			shmc1.current += sizeof(struct tx_shmq);
 			shmc1.idx++;
 
-			if(shmc1.idx == DESC_ENTRY_SIZE-1){
+			if(shmc1.idx > DESC_ENTRY_SIZE-1){
 				shmc1.idx = 0;
 				shmc1.current = shmc1.buf;				
 			}

@@ -13,7 +13,6 @@
 
 #define RX_SHM_PATH "/rx_shm_port2"
 #define RX_KEY_VAL   	600
-#define RX_SHM_SIZE 	1500*248
 
 using bess::utils::Ethernet;
 using bess::utils::Ipv4;
@@ -40,12 +39,8 @@ enum SEM_OPS{
 	LOCK = 1,
 };
 
-struct shm_conf{
-	int sem_id;
-	char *buf;
-	unsigned short val[1];
-};
-struct shm_conf rx_shmc2;
+struct rx_shm_conf rx_shmc2;
+char *shm2;
 
 CommandResponse RxShmPort2::Init(const bess::pb::EmptyArg &)
 {
@@ -70,6 +65,8 @@ CommandResponse RxShmPort2::Init(const bess::pb::EmptyArg &)
 	if(rx_shmc2.buf == MAP_FAILED){
 		return CommandFailure(errno,"failed to mmap for buffer");
 	}
+	
+	shm2 = rx_shmc2.buf;
 
 	close(fd);
 
@@ -78,6 +75,8 @@ CommandResponse RxShmPort2::Init(const bess::pb::EmptyArg &)
 	if(rx_shmc2.sem_id == -1){
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
+
+	rx_shmc2.idx = 0;
 	
 	set_val2[0] = 0;
 	rx_sem2.array = set_val2;
@@ -108,7 +107,6 @@ CommandResponse RxShmPort2::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
-char *shm2 = rx_shmc2.buf;
 void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
@@ -128,11 +126,17 @@ void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 		if(pktlen > 0){
 			rxsq.length = pktlen;
 			LOG(INFO) << "pktlen " << pktlen;
-			//data = pkt->head_data<char *>();
+
 			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(rx_shmc2.buf,&rxsq,sizeof(struct rx_shmq));
+			memcpy(shm2,&rxsq,sizeof(rxsq));
+
 			LOG(INFO) << "rx done: write pkt to shm";
+			rx_shmc2.idx++;			
 			shm2 += sizeof(rxsq);
+			if(rx_shmc2.idx > DESC_ENTRY_SIZE-1){
+				rx_shmc2.idx = 0;
+				shm2 = rx_shmc2.buf;
+			}
 		}
 	}
 	if(cnt && pktlen > 0){
@@ -145,13 +149,12 @@ void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 	}
 }
 
-void RxShmPort2::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
+void RxShmPort2::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
 		LOG(INFO) << "process batch";
 		WritePkt(batch);
 	}
-	if(ctx){}
 	LOG(INFO) << "process batch";
 }
 

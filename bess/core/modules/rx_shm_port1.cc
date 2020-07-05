@@ -13,7 +13,6 @@
 
 #define RX_SHM_PATH "/rx_shm_port1"
 #define RX_KEY_VAL   	500
-#define RX_SHM_SIZE 	1500*248
 
 using bess::utils::Ethernet;
 using bess::utils::Ipv4;
@@ -40,12 +39,8 @@ enum SEM_OPS{
 	LOCK = 1,
 };
 
-struct shm_conf{
-	int sem_id;
-	char *buf;
-	unsigned short val[1];
-};
-struct shm_conf rx_shmc1;
+char *shm1;
+struct rx_shm_conf rx_shmc1;
 
 CommandResponse RxShmPort1::Init(const bess::pb::EmptyArg &)
 {
@@ -72,6 +67,8 @@ CommandResponse RxShmPort1::Init(const bess::pb::EmptyArg &)
 		return CommandFailure(errno,"failed to mmap for buffer");
 	}
 
+	shm1 = rx_shmc1.buf;
+
 	close(fd);
 
 	rx_shmc1.sem_id = semget(RX_KEY_VAL,1,0666 | IPC_CREAT);
@@ -80,6 +77,8 @@ CommandResponse RxShmPort1::Init(const bess::pb::EmptyArg &)
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
 	
+	rx_shmc1.idx = 0;
+
 	set_val[0] = 0;
 	rx_sem1.array = set_val;
 	semctl(rx_shmc1.sem_id,0,SETALL,rx_sem1);
@@ -109,7 +108,6 @@ CommandResponse RxShmPort1::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
-char *shm1 = rx_shmc1.buf;
 void RxShmPort1::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
@@ -128,11 +126,18 @@ void RxShmPort1::WritePkt(bess::PacketBatch *batch)
 		if(pktlen > 0){
 			rxsq.length = pktlen;
 			LOG(INFO) << "pktlen " << pktlen;
-			//data = pkt->head_data<char *>();
+
 			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(rx_shmc1.buf,&rxsq,sizeof(rxsq));
+			memcpy(shm1,&rxsq,sizeof(rxsq));
+			//memcpy(rx_shmc1.buf,&rxsq,sizeof(rxsq));
 			LOG(INFO) << "rx done: write pkt to shm";
+			
 			shm1 += sizeof(rxsq);
+			rx_shmc1.idx++;
+			if(rx_shmc1.idx > DESC_ENTRY_SIZE - 1){
+				rx_shmc1.idx = 0;
+				shm1 = rx_shmc1.buf;
+			}
 		}
 	}
 	if(pktlen > 0 && cnt){
@@ -147,13 +152,12 @@ void RxShmPort1::WritePkt(bess::PacketBatch *batch)
 	}
 }
 
-void RxShmPort1::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
+void RxShmPort1::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
 		LOG(INFO) << "process batch";
 		WritePkt(batch);
 	}
-	if(ctx){}
 }
 
 ADD_MODULE(RxShmPort1,"rx_shm_port1","communication port for shared memory")

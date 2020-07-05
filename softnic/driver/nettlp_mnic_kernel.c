@@ -827,7 +827,10 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 
 		adapter->bar4->tx_pkt[q_idx].addr = dma;
 		adapter->bar4->tx_pkt[q_idx].length = pktlen;
+<<<<<<< HEAD
 		tx_untreated++;
+=======
+>>>>>>> 424019d8b68a25efaacb1f74268a9f8c1e3a3d21
 
 		tx_desc->addr = dma;
 		tx_desc->length = pktlen;
@@ -849,12 +852,19 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 
 			adapter->bar4->tx_pkt[q_idx].addr = dma;
 			adapter->bar4->tx_pkt[q_idx].length = skb->len;
+<<<<<<< HEAD
 			tx_untreated++;
+=======
+>>>>>>> 424019d8b68a25efaacb1f74268a9f8c1e3a3d21
 
 			adapter->ndev->stats.tx_packets++;
 			adapter->ndev->stats.tx_bytes += skb->len;
 
+<<<<<<< HEAD
 			tx_desc->addr = dma;
+=======
+			tx_desc->addr = cpu_to_le64(dma);
+>>>>>>> 424019d8b68a25efaacb1f74268a9f8c1e3a3d21
 			tx_desc->length = skb->len;
 		}
 	

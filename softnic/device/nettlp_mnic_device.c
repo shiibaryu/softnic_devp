@@ -33,6 +33,8 @@ static int caught_signal;
 int txsemid[TX_QUEUES],rxsemid[RX_QUEUES];
 unsigned short init_val[1];
 
+unsigned long long pkt_cnt = 0;
+
 void signal_handler(int signal)
 {
 	int i,ret;
@@ -127,7 +129,11 @@ tx_done:
 			}
 		}
 
+		pkt_cnt += i ;
+
 		info("nwrite num is %d",num_wr[0]);
+		info("total tx pkts is %lld",pkt_cnt);
+
 		mnic->tx_sem[offset].array = num_wr;
 
 		wait_bess(mnic->tx_sem_id[offset],mnic->tx_sem[offset]);
@@ -221,7 +227,6 @@ int nettlp_mnic_mwr(struct nettlp *nt,struct tlp_mr_hdr *mh,void *data,size_t co
 		d = (uint64_t *)data;
 		offset = get_bar4_rxt_offset(mnic->bar4_start,dma_addr);
 		mnic_rx(*d,nt,mnic,offset);
-		info("rx state is %d",mnic->rx_state[offset]);
 	}
 	else if(is_mwr_addr_tx_pkt_addr(mnic->bar4_start,dma_addr)){
 		struct descriptor *tx_desc;
@@ -269,7 +274,6 @@ void *nettlp_mnic_shm_read_thread(void *arg)
 	struct rx_desc_ctl *rxd_ctl = rx_shm_ctl->desc_ctl;
 	struct nettlp *rx_nt = rx_shm_ctl->nt;
 
-	info("semid is %d",sem_id);
 	clr[0] = 0;
 	idx = rx_shm_ctl->idx;
 	rx_sem = rx_shm_ctl->semu[idx];
@@ -288,12 +292,9 @@ void *nettlp_mnic_shm_read_thread(void *arg)
 			info("rx_state is not ready");
 		}
 
-		info("semval is %d",semval);
-
 		for(i=0;i<semval;i++){
 
 			memcpy(&rxsq,shm,sizeof(struct rx_shmq));
-			info("rx shm queue copy");
 			info("length is %d",rxsq.length);
 
 			if(rxsq.length <= 0 || *rx_state != RX_STATE_READY){
@@ -316,15 +317,9 @@ void *nettlp_mnic_shm_read_thread(void *arg)
 				debug("rx_desc write_back: failed to dma_write to %#lx",rxd_addr);
 				continue;
 			}
-
-			ret = dma_write(rx_nt,rx_irq->addr,&rx_irq->data,sizeof(rx_irq->data));
-			if(ret < 0){
-				fprintf(stderr,"failed to generate Rx Interrupt\n");
-				perror("dma_write for rx interrupt");
-			}
 		
 			rx_desc++;
-			//shm += sizeof(struct rx_shmq);
+			shm += sizeof(struct rx_shmq);
 			rxd_ctl->desc_head += sizeof(struct descriptor);
 			rxd_ctl->head++;
 
@@ -332,13 +327,20 @@ void *nettlp_mnic_shm_read_thread(void *arg)
 				rx_desc = rx_shm_ctl->desc;
 				rxd_ctl->head = 0;
 				rxd_ctl->desc_head = *rx_desc_base;
-				//shm = rx_shm_ctl->shm;
+				shm = rx_shm_ctl->shm;
 			};
 
 			*rx_state = RX_STATE_READY;
 		}
 
-		info("semctl");
+		if(*rx_state == RX_STATE_READY){
+			ret = dma_write(rx_nt,rx_irq->addr,&rx_irq->data,sizeof(rx_irq->data));
+			if(ret < 0){
+				fprintf(stderr,"failed to generate Rx Interrupt\n");
+				perror("dma_write for rx interrupt");
+			}
+		}
+
 		rx_sem.array = clr;
 		semctl(sem_id,0,SETALL,rx_sem);
 		semval = 0;
@@ -513,7 +515,7 @@ void usage()
 
 int main(int argc,char **argv)
 {
-        int opt,ret,mem_size,i,n;
+        int opt,ret,tx_mem_size,rx_mem_size,i,n;
         int tx_fd[TX_QUEUES],rx_fd[RX_QUEUES];
 	struct nettlp nt,nts[16],*nts_ptr[16];
 	struct nettlp_cb cb;
@@ -560,23 +562,25 @@ int main(int argc,char **argv)
         
 	memset(&mnic,0,sizeof(mnic));
 
-	mem_size = SHM_SIZE;
+	tx_mem_size = TX_SHM_SIZE;
+	rx_mem_size = RX_SHM_SIZE;
+
 	mnic_f = &mnic;
 
 	mnic_alloc(&mnic);
 
-	ret = tx_shm_alloc(mem_size,tx_fd);
+	ret = tx_shm_alloc(tx_mem_size,tx_fd);
 	if(ret == -1){
 		return -1;
 	}
 
-	ret = rx_shm_alloc(mem_size,rx_fd);
+	ret = rx_shm_alloc(rx_mem_size,rx_fd);
 	if(ret == -1){
 		return -1;
 	}
 
 	for(i=0;i<TX_QUEUES;i++){
-		mnic.tx_shm[i] = shm_map(tx_fd[i],mem_size);
+		mnic.tx_shm[i] = shm_map(tx_fd[i],tx_mem_size);
 		if(mnic.tx_shm[i] == NULL){
 			debug("tx_shm_map");
 			return -1;
@@ -584,7 +588,7 @@ int main(int argc,char **argv)
 	}
 
 	for(i=0;i<RX_QUEUES;i++){
-		mnic.rx_shm[i] = shm_map(rx_fd[i],mem_size);
+		mnic.rx_shm[i] = shm_map(rx_fd[i],rx_mem_size);
 		if(mnic.rx_shm[i] == NULL){
 			debug("rx_shm map");
 			return -1;

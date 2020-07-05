@@ -11,8 +11,8 @@
 #define RX4_SHM_PATH	"/rx4_shm"
 
 #define SHM_SIZE	2048*256  //MAX_PACKET_SIZE*NUM_OF_DESCRIPTOR
-#define TX_SHM_DESC_SIZE	sizeof(struct tx_shm_desc)*256 
-#define RX_SHM_DESC_SIZE	sizeof(struct rx_shm_desc)*256 
+#define TX_SHM_SIZE	sizeof(struct tx_shmq)*256 
+#define RX_SHM_SIZE	sizeof(struct rx_shmq)*256 
 
 struct tx_shmq{
 	uint32_t length;

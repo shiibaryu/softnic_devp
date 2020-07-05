@@ -13,7 +13,6 @@
 
 #define RX_SHM_PATH "/rx_shm_port4"
 #define RX_KEY_VAL   	800
-#define RX_SHM_SIZE 	1500*248
 
 using bess::utils::Ethernet;
 using bess::utils::Ipv4;
@@ -40,17 +39,14 @@ enum SEM_OPS{
 	LOCK = 1,
 };
 
-struct shm_conf{
-	int sem_id;
-	char *buf;
-	unsigned short val[1];
-};
-struct shm_conf rx_shmc4;
+char *shm4;
+struct rx_shm_conf rx_shmc4;
 
 CommandResponse RxShmPort4::Init(const bess::pb::EmptyArg &)
 {
 	int fd,ret;
 	int mem_size = RX_SHM_SIZE;
+
 	memset(&rx_shmc4,0,sizeof(rx_shmc4));
 
 	fd = shm_open(RX_SHM_PATH,O_RDWR,0);
@@ -70,6 +66,7 @@ CommandResponse RxShmPort4::Init(const bess::pb::EmptyArg &)
 	if(rx_shmc4.buf == MAP_FAILED){
 		return CommandFailure(errno,"failed to mmap for buffer");
 	}
+	shm4 = rx_shmc4.buf;
 
 	close(fd);
 
@@ -78,6 +75,8 @@ CommandResponse RxShmPort4::Init(const bess::pb::EmptyArg &)
 	if(rx_shmc4.sem_id == -1){
 		return CommandFailure(errno,"failed to acquire semaphore");
 	}
+
+	rx_shmc4.idx = 0;
 	
 	set_val4[0] = 0;
 	rx_sem4.array = set_val4;
@@ -108,7 +107,6 @@ CommandResponse RxShmPort4::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
-char *shm4 = rx_shmc4.buf;
 void RxShmPort4::WritePkt(bess::PacketBatch *batch)
 {
 	int i,cnt,pktlen;
@@ -129,13 +127,21 @@ void RxShmPort4::WritePkt(bess::PacketBatch *batch)
 		if(pktlen > 0){
 			rxsq.length = pktlen;
 			LOG(INFO) << "pktlen " << pktlen;
-			//data = pkt->head_data<char *>();
+
 			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(rx_shmc4.buf,&rxsq,sizeof(struct rx_shmq));
+			memcpy(shm4,&rxsq,sizeof(rxsq));
 			LOG(INFO) << "rx done: write pkt to shm";
+
+			rx_shmc4.idx++;
 			shm4 += sizeof(rxsq);
+
+			if(rx_shmc4.idx > DESC_ENTRY_SIZE - 1){
+				rx_shmc4.idx = 0;
+				shm4 = rx_shmc4.buf;
+			}
 		}
 	}
+
 	if(cnt && pktlen > 0){
 		set_val4[0] = cnt;
 		rx_sem4.array = set_val4;
@@ -147,13 +153,12 @@ void RxShmPort4::WritePkt(bess::PacketBatch *batch)
 	}
 }
 
-void RxShmPort4::ProcessBatch(Context *ctx, bess::PacketBatch *batch)
+void RxShmPort4::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
 		WritePkt(batch);
 		LOG(INFO) << "process batch";
 	}
-	if(ctx){}
 }
 
 ADD_MODULE(RxShmPort4,"rx_shm_port4","communication port for shared memory")
