@@ -110,30 +110,25 @@ CommandResponse RxShmPort1::CommandClear(const bess::pb::EmptyArg &)
 
 void RxShmPort1::WritePkt(bess::PacketBatch *batch)
 {
-	int i,cnt,pktlen;
+	uint32_t i,cnt,pktlen;
 	//char *data;
 	bess::Packet *pkt; 
-	struct rx_shmq rxsq;
 
 	pktlen = 0;
 
 	cnt = batch->cnt();
 	for(i=0;i<cnt;i++){
 		while(semctl(rx_shmc1.sem_id,0,GETVAL,rx_sem1) != 0){}
-		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
 		pktlen = pkt->data_len();
 		if(pktlen > 0){
-			rxsq.length = pktlen;
-			LOG(INFO) << "pktlen " << pktlen;
+			memcpy(shm1,&pktlen,sizeof(uint32_t));
+			shm1 += sizeof(uint32_t);
 
-			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(shm1,&rxsq,sizeof(rxsq));
-			//memcpy(rx_shmc1.buf,&rxsq,sizeof(rxsq));
-			LOG(INFO) << "rx done: write pkt to shm";
-			
-			shm1 += sizeof(rxsq);
+			memcpy(shm1,pkt->head_data(),pktlen);
+
 			rx_shmc1.idx++;
+			shm1 += pktlen;
 			if(rx_shmc1.idx > DESC_ENTRY_SIZE - 1){
 				rx_shmc1.idx = 0;
 				shm1 = rx_shmc1.buf;
@@ -143,7 +138,6 @@ void RxShmPort1::WritePkt(bess::PacketBatch *batch)
 	if(pktlen > 0 && cnt){
 		set_val[0] = cnt;
 		rx_sem1.array = set_val;
-		LOG(INFO) << "semavl is " << cnt;
 
 		if(semctl(rx_shmc1.sem_id,0,SETALL,rx_sem1)==-1){
 			LOG(INFO) << "errrrrr";
@@ -155,7 +149,6 @@ void RxShmPort1::WritePkt(bess::PacketBatch *batch)
 void RxShmPort1::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
-		LOG(INFO) << "process batch";
 		WritePkt(batch);
 	}
 }

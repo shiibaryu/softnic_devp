@@ -7,7 +7,7 @@
 #define TX_QUEUES   	4
 #define RX_QUEUES   	4
 
-#define DESC_ENTRY_SIZE  256
+#define DESC_ENTRY_SIZE  512
 
 #define BAR4_RX_DESC_BASE	24
 #define BAR4_RX_DESC_PTR	56

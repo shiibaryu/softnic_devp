@@ -35,8 +35,8 @@ class TxShmPort1 final : public Module{
 		CommandResponse CommandClear(const bess::pb::EmptyArg &arg);
 
 	private:
-		void FillPacket(bess::Packet *p,struct tx_shmq *txsq);
-		void GeneratePackets(Context *ctx, bess::PacketBatch *batch,bess::Packet *p,struct tx_shmq *txsq);
+		void FillPacket(bess::Packet *p,uint32_t length);
+		void GeneratePackets(Context *ctx, bess::PacketBatch *batch,bess::Packet *p,uint32_t length);
 
 		friend class TxShmPortThread1;
 		TxShmPortThread1 shm_thread_;

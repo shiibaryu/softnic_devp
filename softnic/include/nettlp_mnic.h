@@ -1,14 +1,14 @@
 /*TX/RX descriptor defines*/
-#define MNIC_DEFAULT_TXD	256
-#define MNIC_MIN_TXD		256
-#define MNIC_DEFAULT_TX_WORK    1
-#define MNIC_MAX_TXD		256
+#define MNIC_DEFAULT_TXD	512
+#define MNIC_MIN_TXD		128
+#define MNIC_DEFAULT_TX_WORK    256
+#define MNIC_MAX_TXD		512
 #define MNIC_MAX_TXD_PWR	15
 #define MNIC_MAX_DATA_PER_TXD   (1u << MNIC_MAX_TXD_PWR)
 
-#define MNIC_DEFAULT_RXD	256
+#define MNIC_DEFAULT_RXD	512
 #define MNIC_MIN_RXD		256
-#define MNIC_MAX_RXD		256
+#define MNIC_MAX_RXD		512
 
 #define MAX_Q_VECTORS		8
 
@@ -76,10 +76,8 @@ struct mnic_bar0{
 };
 
 struct mnic_tx_buffer{
-	struct descriptor *next_to_watch;
 	uint16_t time_stamp;
 	struct sk_buff *skb;
-	uint8_t bytecount;
 	DEFINE_DMA_UNMAP_ADDR(dma);
 	DEFINE_DMA_UNMAP_LEN(len);
 	uint32_t tx_flags;
@@ -116,7 +114,7 @@ struct mnic_ring{
 	struct device *dev;
 	struct mnic_tx_buffer *tx_buf_info;
 
-	void *desc;
+	void *rx_desc;
 	unsigned long flags;
 	void __iomem *tail;
 	dma_addr_t dma;
@@ -219,11 +217,8 @@ static inline __le32 mnic_test_staterr(struct descriptor *rx_desc,const u32 stat
 	return 0;
 }
 
-#define MNIC_TX_DESC(R,i)	\
-	(&(((struct descriptor *)((R)->desc))[i]))
-
 #define MNIC_RX_DESC(R,i)	\
-	(&(((struct descriptor *)((R)->desc))[i]))
+	(&(((struct descriptor *)((R)->rx_desc))[i]))
 
 #define mnic_get_mac(dst, src) do {			\
 		dst[0] = src[5];		\

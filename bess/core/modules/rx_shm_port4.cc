@@ -109,31 +109,24 @@ CommandResponse RxShmPort4::CommandClear(const bess::pb::EmptyArg &)
 
 void RxShmPort4::WritePkt(bess::PacketBatch *batch)
 {
-	int i,cnt,pktlen;
+	uint32_t i,cnt,pktlen;
 	//char *data;
 	bess::Packet *pkt;
-	struct rx_shmq rxsq;
 
 	pktlen = 0;
 
 	cnt = batch->cnt();
-	LOG(INFO) << "cnt is " << cnt;
 	for(i=0;i<cnt;i++){
-		LOG(INFO) << "wait for mnic";
 		while(semctl(rx_shmc4.sem_id,0,GETVAL,rx_sem4) != 0){}
-		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
 		pktlen = pkt->data_len();
 		if(pktlen > 0){
-			rxsq.length = pktlen;
-			LOG(INFO) << "pktlen " << pktlen;
+			memcpy(shm4,&pktlen,sizeof(uint32_t));
 
-			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(shm4,&rxsq,sizeof(rxsq));
-			LOG(INFO) << "rx done: write pkt to shm";
+			memcpy(shm4,pkt->head_data(),pktlen);
 
 			rx_shmc4.idx++;
-			shm4 += sizeof(rxsq);
+			shm4 += pktlen;
 
 			if(rx_shmc4.idx > DESC_ENTRY_SIZE - 1){
 				rx_shmc4.idx = 0;
@@ -145,10 +138,7 @@ void RxShmPort4::WritePkt(bess::PacketBatch *batch)
 	if(cnt && pktlen > 0){
 		set_val4[0] = cnt;
 		rx_sem4.array = set_val4;
-		LOG(INFO) << "semavl is " << cnt;
-		LOG(INFO) << "sem id is " << rx_shmc4.sem_id;
 		if(semctl(rx_shmc4.sem_id,0,SETALL,rx_sem4)==-1){
-			LOG(INFO) << "errrrrr";
 		}
 	}
 }
@@ -157,7 +147,6 @@ void RxShmPort4::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
 		WritePkt(batch);
-		LOG(INFO) << "process batch";
 	}
 }
 

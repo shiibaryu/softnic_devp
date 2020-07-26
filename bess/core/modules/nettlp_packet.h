@@ -121,7 +121,7 @@ struct tcp{
 		cwr:1,
 		ece:1,
 		urg:1,
-		ack:1	
+		ack:1,	
 		psh:1,
 		rst:1,
 		syn:1,

@@ -1,0 +1,3 @@
+/home/siiba/softnic_devp/bess/deps/dpdk-19.11.1/build/build/kernel/linux/igb_uio/igb_uio.ko
+/home/siiba/softnic_devp/bess/deps/dpdk-19.11.1/build/build/kernel/linux/igb_uio/igb_uio.o
+

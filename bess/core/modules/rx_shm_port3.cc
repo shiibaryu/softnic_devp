@@ -109,10 +109,9 @@ CommandResponse RxShmPort3::CommandClear(const bess::pb::EmptyArg &)
 
 void RxShmPort3::WritePkt(bess::PacketBatch *batch)
 {
-	int i,cnt,pktlen;
+	uint32_t i,cnt,pktlen;
 	//char *data;
 	bess::Packet *pkt;
-	struct rx_shmq rxsq;
 
 	pktlen = 0;
 
@@ -120,19 +119,16 @@ void RxShmPort3::WritePkt(bess::PacketBatch *batch)
 	for(i=0;i<cnt;i++){
 		//just wait
 		while(semctl(rx_shmc3.sem_id,0,GETVAL,rx_sem3) != 0){}
-		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
 		pktlen = pkt->data_len();
 		if(pktlen > 0){
-			rxsq.length = pktlen;
-			LOG(INFO) << "pktlen " << pktlen;
+			memcpy(shm3,&pktlen,sizeof(uint32_t));
 
-			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(shm3,&rxsq,sizeof(rxsq));
-			LOG(INFO) << "rx done: write pkt to shm";
+			shm3 += sizeof(uint32_t);
+			memcpy(shm3,pkt->head_data(),pktlen);
 
 			rx_shmc3.idx++;
-			shm3 += sizeof(rxsq);
+			shm3 += pktlen;
 
 			if(rx_shmc3.idx > DESC_ENTRY_SIZE - 1){
 				rx_shmc3.idx = 0;
@@ -143,9 +139,7 @@ void RxShmPort3::WritePkt(bess::PacketBatch *batch)
 	if(cnt && pktlen > 0){
 		set_val3[0] = cnt;
 		rx_sem3.array = set_val3;
-		LOG(INFO) << "semavl is " << cnt;
 		if(semctl(rx_shmc3.sem_id,0,SETALL,rx_sem3)==-1){
-			LOG(INFO) << "errrrrr";
 		}
 	}
 
@@ -155,7 +149,6 @@ void RxShmPort3::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
 		WritePkt(batch);
-		LOG(INFO) << "process batch";
 	}
 }
 

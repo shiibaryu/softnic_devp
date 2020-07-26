@@ -140,7 +140,7 @@ CommandResponse TxShmPort1::CommandClear(const bess::pb::EmptyArg &)
 	return CommandSuccess();
 }
 
-void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
+void TxShmPort1::FillPacket(bess::Packet *p, uint32_t length)
 {
 	unsigned int header_size;
 	char *pkt,*bp/**current_pkt*/;
@@ -164,9 +164,9 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 	b_pkt->set_data_off(SNBUF_HEADROOM);
 	bp = b_pkt->buffer<char *>() + SNBUF_HEADROOM;
 
-	memcpy(p->head_data(),txsq->data,txsq->length);
+	memcpy(p->head_data(),shmc1.current,length);
 
-	pkt = (char *)txsq->data;
+	pkt = (char *)shmc1.current;
 	//bess::utils::Copy(b_pkt,pkt,template_size,true);
 
 	b_eth = reinterpret_cast<Ethernet *>(bp);
@@ -176,18 +176,18 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 	b_eth->ether_type = be16_t(ntohs(eth->ether_type));
 	header_size = ETHER_HDR_SIZE;
 
-	b_pkt->set_total_len(txsq->length);
-	b_pkt->set_data_len(txsq->length);
+	b_pkt->set_total_len(length);
+	b_pkt->set_data_len(length);
 
 	if(b_eth->ether_type == be16_t(Ethernet::Type::kIpv4)){
-		LOG(INFO) << "ip";
+		//LOG(INFO) << "ip";
 
 		ipv4  = (struct ipv4 *)(pkt + sizeof(*eth));
 		b_ip = reinterpret_cast<Ipv4 *>(b_eth + 1);
 		b_ip->src = be32_t(ntohl(ipv4->src_ip.s_addr));
 		b_ip->dst = be32_t(ntohl(ipv4->dst_ip.s_addr));
-		LOG(INFO) << " " << ToIpv4Address(b_ip->src);
-		LOG(INFO) << " " << ToIpv4Address(b_ip->dst);
+		//LOG(INFO) << " " << ToIpv4Address(b_ip->src);
+		//LOG(INFO) << " " << ToIpv4Address(b_ip->dst);
 
 		b_ip->version = 4;
 		b_ip->header_length = ipv4->ihl;
@@ -198,19 +198,16 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 		b_ip->protocol = ipv4->protocol;
 		b_ip->checksum =  ipv4->check;
 
-		LOG(INFO) << "Ipv" << b_ip->version;
-		LOG(INFO) << "length" << b_ip->length;
-		LOG(INFO) << "fragment off" << b_ip->fragment_offset;
+		//LOG(INFO) << "Ipv" << b_ip->version;
+		//LOG(INFO) << "length" << b_ip->length;
+		//LOG(INFO) << "fragment off" << b_ip->fragment_offset;
 
 		header_size += b_ip->header_length;
 
 		if(ipv4->protocol == PROTO_UDP){
-			LOG(INFO) << "udp";
+			//LOG(INFO) << "udp";
 			udp = (struct udp *)(pkt + sizeof(*eth) + sizeof(*ipv4));
 			b_udp = reinterpret_cast<Udp *>(b_ip + 1);
-			//b_udp->src_port = be16_t(udp->src_port);
-			//b_udp->dst_port = be16_t(udp->dst_port);
-			//b_udp->length = be16_t(udp->len);
 			b_udp->src_port = be16_t(ntohs(udp->src_port));
 			b_udp->dst_port = be16_t(ntohs(udp->dst_port));
 			b_udp->length = be16_t(ntohs(udp->len));
@@ -222,7 +219,7 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			return;
 		}
 		else if(ipv4->protocol == PROTO_ICMP){
-			LOG(INFO) << "icmp";
+			//LOG(INFO) << "icmp";
 
 			icmp = (struct icmpv4 *)(pkt + sizeof(*eth) + sizeof(*ipv4));
 			b_icmp = reinterpret_cast<Icmp *>(b_ip + 1);
@@ -234,12 +231,12 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			b_icmp->checksum = icmp->checksum;
 
 			header_size += ICMP_HDR_SIZE;
-			LOG(INFO) << "icmp size is " << header_size;
+			//LOG(INFO) << "icmp size is " << header_size;
 
 			return;
 		}
 		else if(ipv4->protocol == PROTO_TCP){
-			LOG(INFO) << "tcp";
+			//LOG(INFO) << "tcp";
 
 			tcp = (struct tcp *)(pkt + sizeof(*eth) + sizeof(*ipv4));
 			b_tcp = reinterpret_cast<Tcp *>(b_ip + 1);
@@ -255,36 +252,42 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 			//b_tcp->flags 	= tcp_flag_word(tcp);
 			b_tcp->urgent_ptr  = be16_t(ntohs(tcp->urg_ptr));
 
+			if(tcp->fin){
+				//LOG(INFO) << "fin";
+				b_tcp->flags |= 0x01;
+			}
 			if(tcp->syn){
-				LOG(INFO) << "syn";
+				//LOG(INFO) << "syn";
 				b_tcp->flags |= 0x02;
+			}
+			if(tcp->rst){
+				b_tcp->flags |= 0x04;
+			}
+			if(tcp->psh){
+				b_tcp->flags |= 0x08;
 			}
 			if(tcp->ack){
 				b_tcp->flags |= 0x10;
 			}
-			if(tcp->fin){
-				LOG(INFO) << "fin";
-				b_tcp->flags = 0x01;
-			}
-			else{
-				LOG(INFO) << "waopfjwapfjewajofaejopaejfop";
+			if(tcp->urg){
+				b_tcp->flags |= 0x20;
 			}
 
 			header_size += tcp->doff;
-			LOG(INFO) << "doff is " << tcp->doff;
-			LOG(INFO) << "tcp size is " << header_size;
+			//LOG(INFO) << "doff is " << tcp->doff;
+			//LOG(INFO) << "tcp size is " << header_size;
 			//header_size += ntohs(tcp->doff);
 			//b_pkt->set_data_len(txsq->length-header_size);
 
 			return;
 		}
 
-		b_pkt->set_data_len(txsq->length-header_size);
+		b_pkt->set_data_len(length-header_size);
 
 		return;
 	}
 	else if(b_eth->ether_type == be16_t(Ethernet::Type::kArp)){
-		LOG(INFO) << "arp";
+		//LOG(INFO) << "arp";
 		arp = (struct arphdr *)(pkt + 14);
 		b_arp = reinterpret_cast<Arp *>(b_eth + 1);
 		b_arp->hw_addr = be16_t(ntohs(arp->ar_hdr));
@@ -306,23 +309,23 @@ void TxShmPort1::FillPacket(bess::Packet *p,struct tx_shmq *txsq)
 	}
 	else if(b_eth->ether_type == be16_t(Ethernet::Type::kIpv6)){
 			// current not available
-			LOG(INFO) << "v6";
-			b_pkt->set_data_len(txsq->length);
+			//LOG(INFO) << "v6";
+			b_pkt->set_data_len(length);
 			return;
 	}
 
 	//b_pkt->set_data_len(txsq->length-header_size);
 
-	LOG(INFO) << "ether";
+	//LOG(INFO) << "ether";
 	return;
 }
 
-void TxShmPort1::GeneratePackets(Context *ctx, bess::PacketBatch *batch,bess::Packet *p,struct tx_shmq *txsq)
+void TxShmPort1::GeneratePackets(Context *ctx, bess::PacketBatch *batch,bess::Packet *p,uint32_t length)
 {
 	//bess::Packet *pkt = nullptr;// = current_worker.packet_pool()->Alloc();
 	//bess::Packet *pkt =  current_worker.packet_pool()->Alloc();
 	if(!p){
-		LOG(INFO) << "pkt == null";
+		//LOG(INFO) << "pkt == null";
 		return;
 	}
 	
@@ -330,40 +333,42 @@ void TxShmPort1::GeneratePackets(Context *ctx, bess::PacketBatch *batch,bess::Pa
 		return;
 	}
 
-	FillPacket(p,txsq);
+	FillPacket(p,length);
+	batch->add(p);
 
 	//pkt->set_data_off(SNBUF_HEADROOM);
 	//pkt->set_total_len(size);
 	//pkt->set_data_len(size);
 
-	if(p){
-		batch->add(p);
-	}	
-
 }
 
 struct task_result TxShmPort1::RunTask(Context *ctx, bess::PacketBatch *batch, void *)
 {
-	uint32_t i;
+	uint32_t i,length;
 	uint32_t semval;
 	unsigned int size=0;
-	struct tx_shmq *txsq;
 
        	semval = semctl(shmc1.sem_id,0,GETVAL,sem1);
 
 	if(semval > 0){
-		LOG(INFO) << "semval " << semval;
+		//LOG(INFO) << "semval " << semval;
+		bess::Packet *pkts[semval];
 
-		batch->clear();
-		bess::Packet *pkt =  current_worker.packet_pool()->Alloc();
+		//batch->clear();
+		//bess::Packet *pkt =  current_worker.packet_pool()->Alloc();
+		if(!current_worker.packet_pool()->AllocBulk(pkts,semval,0)){
+			LOG(INFO) << "failed to alloc bulk packets";
+		}
+  		//bool AllocBulk(Packet **pkts, size_t count, size_t len = 0);
 
 		for(i=0;i<semval;i++){	
-			txsq = (struct tx_shmq *)shmc1.current;
+			memcpy(&length,shmc1.current,sizeof(uint32_t));
+			shmc1.current += sizeof(uint32_t);
 
-			GeneratePackets(ctx,batch,pkt,txsq);
+			GeneratePackets(ctx,batch,pkts[i],length);
 
-			size = txsq->length;
-			shmc1.current += sizeof(struct tx_shmq);
+			size += length;
+			shmc1.current += length;
 			shmc1.idx++;
 
 			if(shmc1.idx > DESC_ENTRY_SIZE-1){
@@ -373,11 +378,11 @@ struct task_result TxShmPort1::RunTask(Context *ctx, bess::PacketBatch *batch, v
 		}
 
 		batch->set_cnt(semval);
-		LOG(INFO) << "tx1 ctr is " << semval;
+		//LOG(INFO) << "tx1 ctr is " << semval;
 		RunNextModule(ctx,batch);
 		//memset(shmc1.buf,0,1500*semval);
 		semctl(shmc1.sem_id,0,SETALL,sem1);
-		LOG(INFO) << "done" << semval;
+		//LOG(INFO) << "done" << semval;
 
 		return {.block = 1, .packets = semval, .bits = size};
 	}

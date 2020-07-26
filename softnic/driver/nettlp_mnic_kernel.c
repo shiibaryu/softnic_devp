@@ -35,7 +35,7 @@
 #define DEFAULT_MSG_ENABLE (NETIF_MSG_DRV | NETIF_MSG_PROBE | NETIF_MSG_LINK)
 
 static int debug = -1;
-static int tx_untreated = 0;
+static int tx_untreated[4];
 
 static int nettlp_mnic_init(struct net_device *ndev)
 {
@@ -67,25 +67,7 @@ static void mnic_clean_tx_ring(struct mnic_ring *tx_ring)
 
 
 	while (i != tx_ring->next_to_use) {
-		struct descriptor *eop_desc, *tx_desc;
-
 		dev_kfree_skb_any(tx_buffer->skb);
-
-		eop_desc = tx_buffer->next_to_watch;
-		tx_desc = MNIC_TX_DESC(tx_ring, i);
-
-		while (tx_desc != eop_desc) {
-			tx_buffer++;
-			tx_desc++;
-			i++;
-			if (unlikely(i == tx_ring->count)) {
-				i=0;
-				tx_buffer = tx_ring->tx_buf_info;
-				tx_desc = MNIC_TX_DESC(tx_ring, 0);
-			}
-
-		}
-
 		tx_buffer++;
 		i++;
 		if (unlikely(i == tx_ring->count)) {
@@ -117,14 +99,6 @@ void mnic_free_tx_resource(struct mnic_ring *tx_ring)
 	
 	vfree(tx_ring->tx_buf_info);
 	tx_ring->tx_buf_info = NULL;
-	
-	if(tx_ring->desc){
-		dma_free_coherent(tx_ring->dev,tx_ring->size,tx_ring->desc,tx_ring->dma);
-		tx_ring->desc = NULL;
-	}
-	else{
-		return;
-	}
 }
 
 static void mnic_free_all_tx_resources(struct mnic_adapter *adapter)
@@ -141,10 +115,11 @@ static void mnic_free_all_tx_resources(struct mnic_adapter *adapter)
 	}
 
 }
-static int mnic_setup_tx_resource(struct mnic_ring *tx_ring,int i,struct mnic_adapter *adapter)
+
+static int mnic_setup_tx_resource(struct mnic_ring *tx_ring,struct mnic_adapter *adapter)
 {
-	int size;
-	struct device *dev = tx_ring->dev;
+	int i,size;
+	//struct device *dev = tx_ring->dev;
 	
 	pr_info("%s: start",__func__);
 
@@ -159,22 +134,13 @@ static int mnic_setup_tx_resource(struct mnic_ring *tx_ring,int i,struct mnic_ad
 		goto err;
 	}
 	pr_info("Success: allocate tx_ring->tx_buf_info");
-	
-	tx_ring->size = tx_ring->count*sizeof(struct descriptor);
-	
-	pr_info("For descriptor-> size: %lld ring_count: %d",tx_ring->size,tx_ring->count);
-
-	tx_ring->desc = dma_alloc_coherent(dev,tx_ring->size,&tx_ring->dma,GFP_KERNEL);
-	if(!tx_ring->desc){
-		goto err;
-	}
-	pr_info("Success: allocate tx_ring->desc");
-
-	//adapter->bar4->tx_desc_base[i] = tx_ring->dma;
-	pr_info("tx descriptor base address[%d] -> %#llx\n",i,tx_ring->dma);
 
 	tx_ring->next_to_use = 0;
 	tx_ring->next_to_clean = 0;
+
+	for(i=0;i<MNIC_DEFAULT_TXD;i++){
+		tx_ring->tx_buf_info->skb = NULL;
+	}
 
 	pr_info("%s: end",__func__);
 
@@ -193,8 +159,12 @@ static int mnic_setup_all_tx_resources(struct mnic_adapter *adapter)
 
 	pr_info("%s: start",__func__);
 
+	for(i=0;i<4;i++){
+		tx_untreated[i] = 0;
+	}
+
 	for(i=0; i < adapter->num_tx_queues; i++){
-		ret = mnic_setup_tx_resource(adapter->tx_ring[i],i,adapter);
+		ret = mnic_setup_tx_resource(adapter->tx_ring[i],adapter);
 		if(ret){
 			pr_info("%s: failed to setup tx_resource\n",__func__);
 			for(i--;i>0;i--){
@@ -242,14 +212,14 @@ void mnic_free_rx_resources(struct mnic_ring *rx_ring)
 
 	mnic_clean_rx_ring(rx_ring);
 
-	if (!rx_ring->desc)
+	if (!rx_ring->rx_desc)
 		return;
 
 	dma_free_coherent(rx_ring->dev, rx_ring->size,
-			  rx_ring->desc, rx_ring->dma);
+			  rx_ring->rx_desc, rx_ring->dma);
 
 	dma_free_coherent(rx_ring->dev,2048*rx_ring->count,rx_ring->rx_buf,rx_ring->rx_dma);
-	rx_ring->desc = NULL;
+	rx_ring->rx_desc = NULL;
 
 	pr_info("%s: end",__func__);
 }
@@ -264,14 +234,14 @@ int mnic_setup_rx_resource(struct mnic_ring *rx_ring,int i,struct mnic_adapter *
 
 	rx_ring->size = rx_ring->count * sizeof(struct descriptor);
 	
-	rx_ring->desc = dma_alloc_coherent(dev, rx_ring->size,
+	rx_ring->rx_desc = dma_alloc_coherent(dev, rx_ring->size,
 					   &rx_ring->dma, GFP_KERNEL);
 
 	rx_ring->rx_buf = dma_alloc_coherent(rx_ring->dev,2048*rx_ring->count,&rx_ring->rx_dma,GFP_KERNEL);
 	pr_info("For buffer-> size: %d ring_count: %d",2048*rx_ring->count,MNIC_DEFAULT_RXD);
 
 	pr_info("For descriptor-> size: %lld ring_count: %d",rx_ring->size,rx_ring->count);
-	if (!rx_ring->desc){
+	if (!rx_ring->rx_desc){
 		goto err;
 	}
 
@@ -404,65 +374,46 @@ static bool mnic_clean_tx_irq(struct mnic_q_vector *q_vector,int napi_budget)
 {
 	struct mnic_ring *tx_ring = q_vector->tx.ring;
 	struct mnic_tx_buffer *tx_buff;
-	struct descriptor *tx_desc;
-	uint32_t budget = q_vector->tx.work_limit;
+	//uint32_t budget = 256;
+	uint32_t budget = 1;
 	uint32_t i = tx_ring->next_to_clean;
+	uint8_t idx = tx_ring->queue_idx;
 
 	tx_buff = &tx_ring->tx_buf_info[i];
-	tx_desc = MNIC_TX_DESC(tx_ring,i); 
 	i -= tx_ring->count;
 	
+
+	//pr_info("%s: tx_untreated %d, q_idx %d\n",__func__,tx_untreated[idx],idx);
 	do{
-		struct descriptor *eop_desc = tx_buff->next_to_watch;
-		pr_info("%s: clean tx irq",__func__);
-		if(!eop_desc){
+		if(tx_untreated[idx] <= 0 || tx_buff->skb == NULL){
+			pr_info("break: tx_untreated %d, q_idx %d",tx_untreated[idx],idx);
 			break;
 		}
 
 		smp_rmb();
-	
-		tx_buff->next_to_watch = NULL;
 
-		//dma_unmap_single(tx_ring->dev,tx_buff->dma,tx_buff->skb->len,DMA_TO_DEVICE);
 		napi_consume_skb(tx_buff->skb,napi_budget);
 
-		pr_info("dma unmap addr %#llx, dma unmap len %d",dma_unmap_addr(tx_buff,dma),dma_unmap_len(tx_buff,len));
 		dma_unmap_single(tx_ring->dev,dma_unmap_addr(tx_buff,dma),dma_unmap_len(tx_buff,len),DMA_TO_DEVICE);
 
 		tx_buff->skb = NULL;
 		dma_unmap_len_set(tx_buff,len,0);
-		while(tx_desc != eop_desc){
-			tx_buff++;
-			tx_desc++;
-			i++;
-			if(unlikely(!i)){
-				i -= tx_ring->count;
-				tx_buff = tx_ring->tx_buf_info;
-				tx_desc = MNIC_TX_DESC(tx_ring,0);
-			}
-			if(dma_unmap_len(tx_buff,len)){
-				pr_info("%s:dma unmmap len happed",__func__);
-			}
-		}
 
 		tx_buff++;
-		tx_desc++;
 		i++;
 
 		if(unlikely(!i)){
 			i -= tx_ring->count;
 			tx_buff = tx_ring->tx_buf_info;
-			tx_desc = MNIC_TX_DESC(tx_ring,0);
 		}
 
-		prefetch(tx_desc);
-
 		budget--;
+		tx_untreated[idx]--;
 	}while(likely(budget));
 
 	i += tx_ring->count;
 	tx_ring->next_to_clean = i;
-	
+	//pr_info("%s: tx_untreated %d, q_idx %d\n",__func__,tx_untreated[idx],idx);
 
 	return true;
 }
@@ -596,7 +547,7 @@ static bool mnic_clean_rx_irq(struct mnic_q_vector *q_vector,const int budget)
 	q_vector->rx.total_bytes += total_bytes;
 
 		
-	if(cleaned_count > 200){
+	if(cleaned_count > 450){
 		mnic_alloc_rx_buffers(rx_ring,cleaned_count,q_vector->adapter);
 	}
 
@@ -609,12 +560,12 @@ static int mnic_poll(struct napi_struct *napi,int budget)
 	struct mnic_q_vector *q_vector = container_of(napi,struct mnic_q_vector,napi);
 
 	if(q_vector->tx.ring){
-		pr_info("%s:go to clean tx irq",__func__);
-		tx_untreated -= budget;
+		//pr_info("%s:go to clean tx irq",__func__);
+		//pr_info("%s: tx budget is %d",__func__,budget);
 		clean_complete = mnic_clean_tx_irq(q_vector,budget);
 	}
 	if(q_vector->rx.ring){
-		pr_info("%s:go to clean rx irq",__func__);
+		//pr_info("%s:go to clean rx irq",__func__);
 		clean_complete = mnic_clean_rx_irq(q_vector,budget);
 	}
 
@@ -739,7 +690,6 @@ void mnic_unmap_and_free_tx_resource(struct mnic_ring *ring,
 		dma_unmap_single(ring->dev,dma_unmap_addr(tx_buffer,dma),dma_unmap_len(tx_buffer,len),DMA_TO_DEVICE);
 	}
 
-	tx_buffer->next_to_watch = NULL;
 	tx_buffer->skb = NULL;
 	dma_unmap_len_set(tx_buffer, len, 0);
 
@@ -784,7 +734,6 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 {
 	struct sk_buff *skb = first->skb;
 	struct mnic_tx_buffer *tx_buff = NULL;
-	struct descriptor *tx_desc,*tx_desc_prev;
 	skb_frag_t *frag;
 	dma_addr_t dma;
 	uint16_t i = tx_ring->next_to_use;
@@ -792,24 +741,15 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 	uint32_t pktlen = skb->len;
 	unsigned int size,data_len;
 
-	tx_desc_prev = MNIC_TX_DESC(tx_ring,i);
-	tx_desc = MNIC_TX_DESC(tx_ring,i);
-
 	size = skb_headlen(skb);
 	data_len = skb->data_len;
 
 	dma = dma_map_single(tx_ring->dev,skb->data,size,DMA_TO_DEVICE);
 	tx_buff = first;
-	
-	/*
-	dma_unmap_len_set(tx_buff,len,size);
-	dma_unmap_addr_set(tx_buff,dma,dma);
 
-	tx_desc->addr = dma;
-	tx_desc->length = pktlen;
-	*/
+	//pr_info("%s:dma addr is %#llx, skb_headlen %d \n",__func__,dma,size);
 
-	pr_info("%s:dma addr is %#llx, skb_headlen %d \n",__func__,dma,size);
+	//pr_info("%s: tx_untreated %d, q_idx %d\n",__func__,tx_untreated[q_idx],q_idx);
 
 	if(dma_mapping_error(tx_ring->dev,dma)){
 		goto dma_error;
@@ -827,23 +767,15 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 
 		adapter->bar4->tx_pkt[q_idx].addr = dma;
 		adapter->bar4->tx_pkt[q_idx].length = pktlen;
-<<<<<<< HEAD
-		tx_untreated++;
-=======
->>>>>>> 424019d8b68a25efaacb1f74268a9f8c1e3a3d21
-
-		tx_desc->addr = dma;
-		tx_desc->length = pktlen;
+		tx_untreated[q_idx]++;
 
 		adapter->ndev->stats.tx_packets++;
 		adapter->ndev->stats.tx_bytes += pktlen;
 		
 		while(unlikely(size > MNIC_MAX_DATA_PER_TXD)){
 			i++;
-			tx_desc++;
 	
 			if(i == tx_ring->count){
-				tx_desc = MNIC_TX_DESC(tx_ring,0);
 				i = 0;
 			}
 			
@@ -852,20 +784,10 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 
 			adapter->bar4->tx_pkt[q_idx].addr = dma;
 			adapter->bar4->tx_pkt[q_idx].length = skb->len;
-<<<<<<< HEAD
-			tx_untreated++;
-=======
->>>>>>> 424019d8b68a25efaacb1f74268a9f8c1e3a3d21
+			tx_untreated[q_idx]++;
 
 			adapter->ndev->stats.tx_packets++;
 			adapter->ndev->stats.tx_bytes += skb->len;
-
-<<<<<<< HEAD
-			tx_desc->addr = dma;
-=======
-			tx_desc->addr = cpu_to_le64(dma);
->>>>>>> 424019d8b68a25efaacb1f74268a9f8c1e3a3d21
-			tx_desc->length = skb->len;
 		}
 	
 		if(likely(!data_len)){
@@ -873,9 +795,7 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 		}
 
 		i++;
-		tx_desc++;
 		if(i == tx_ring->count){
-			tx_desc = MNIC_TX_DESC(tx_ring,0);
 			i = 0;
 		}
 		
@@ -883,13 +803,10 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 
 		size = skb_frag_size(frag);
 		data_len -= size;
-		pr_info("%s: data len is %d\n",__func__,data_len);
 		
 		dma = skb_frag_dma_map(tx_ring->dev,frag,0,size,DMA_TO_DEVICE);
 		tx_buff = &tx_ring->tx_buf_info[i];
 	}
-
-	first->next_to_watch = tx_desc;
 
 	i++;
 	if(tx_ring->count == i){
@@ -897,6 +814,7 @@ static int mnic_tx_map(struct mnic_ring *tx_ring,struct mnic_tx_buffer *first,co
 	}
 	tx_ring->next_to_use = i;
 
+	//pr_info("%s: tx_untreated %d, q_idx %d\n",__func__,tx_untreated[q_idx],q_idx);
 	return 0;
 
 dma_error:
@@ -973,43 +891,66 @@ int mnic_close(struct net_device *ndev)
 	return 0;
 }
 
-static netdev_tx_t mnic_xmit_frame_ring(struct sk_buff *skb,struct mnic_ring *tx_ring,struct mnic_adapter *adapter)
+static netdev_tx_t mnic_xmit_frame_ring(struct sk_buff *skb,uint32_t q_idx,struct mnic_adapter *adapter)
 {
 	struct mnic_tx_buffer *tx_buff;
+	struct mnic_ring *tx_ring;
 	uint8_t hdr_len = 0;
 
+	if(tx_untreated[q_idx] > MNIC_DEFAULT_TXD-1){
+		pr_info("%s: tx untreated %d, idx %d",__func__,tx_untreated[q_idx],q_idx);
+		pr_info("%s:overflow of untreated tx descriptors on NIC",__func__);
+		kfree_skb(skb);
+		//skb = NULL;
+		return NETDEV_TX_OK;
+	}
+
+	tx_ring = adapter->tx_ring[q_idx];
 	tx_buff = &tx_ring->tx_buf_info[tx_ring->next_to_use];
 	tx_buff->skb = skb;
-	tx_buff->bytecount = skb->len;	
 	
 	mnic_tx_map(tx_ring,tx_buff,hdr_len,adapter);
 
 	return NETDEV_TX_OK;
 }
 
-static inline struct mnic_ring *mnic_tx_queue_mapping(struct mnic_adapter *adapter,struct sk_buff *skb)
+//static int qidx;
+static inline uint32_t mnic_tx_queue_mapping(struct mnic_adapter *adapter,struct sk_buff *skb)
 {
 	uint32_t r_idx = skb->queue_mapping;
 	
 	if(r_idx >= adapter->num_tx_queues){
 		r_idx = r_idx % adapter->num_tx_queues;
 	}
+	
+	
+	//r_idx = 0;
+	/*
+	 r_idx = qidx;
+	 qidx++;
+	 if(qidx > 3){
+	 	qidx = 0;
+	 }*/
+	 
 
-	pr_info("%s: queue mapping is %d\n",__func__,r_idx);
+	//pr_info("%s: queue mapping is %d\n",__func__,r_idx);
 
-	return adapter->tx_ring[r_idx];
+	return r_idx;
 }
 
 static netdev_tx_t mnic_xmit_frame(struct sk_buff *skb,struct net_device *netdev)
 {
 	struct mnic_adapter *adapter = netdev_priv(netdev);
 	
-	if(tx_untreated > MNIC_DEFAULT_TXD -1){
+	/*
+	if(tx_untreated[qidx] > MNIC_DEFAULT_TXD -1){
+		pr_info("%s: tx untreated %d",__func__,tx_untreated[qidx]);
 		pr_info("%s:overflow of untreated tx descriptors on NIC",__func__);
 		kfree_skb(skb);
-		skb = NULL;
-		return NETDEV_TX_BUSY;
+		//skb = NULL;
+		return NETDEV_TX_OK;
 	}
+	*/
 
 	if(skb_put_padto(skb,17)){
 		return NETDEV_TX_OK;

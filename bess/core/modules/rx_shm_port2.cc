@@ -109,10 +109,9 @@ CommandResponse RxShmPort2::CommandClear(const bess::pb::EmptyArg &)
 
 void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 {
-	int i,cnt,pktlen;
+	uint32_t i,cnt,pktlen;
 	//char *data;
 	bess::Packet *pkt;
-	struct rx_shmq rxsq;
 
 	pktlen = 0;
 
@@ -120,19 +119,16 @@ void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 	for(i=0;i<cnt;i++){
 		//just wait
 		while(semctl(rx_shmc2.sem_id,0,GETVAL,rx_sem2) != 0){}
-		LOG(INFO) << "finish waiting";
 		pkt = batch->pkts()[i];
 		pktlen = pkt->data_len();
 		if(pktlen > 0){
-			rxsq.length = pktlen;
-			LOG(INFO) << "pktlen " << pktlen;
+			memcpy(shm2,&pktlen,sizeof(uint32_t));
 
-			memcpy(rxsq.data,pkt->head_data(),pktlen);
-			memcpy(shm2,&rxsq,sizeof(rxsq));
+			shm2 += sizeof(uint32_t);
+			memcpy(shm2,pkt->head_data(),pktlen);
 
-			LOG(INFO) << "rx done: write pkt to shm";
 			rx_shmc2.idx++;			
-			shm2 += sizeof(rxsq);
+			shm2 += pktlen;
 			if(rx_shmc2.idx > DESC_ENTRY_SIZE-1){
 				rx_shmc2.idx = 0;
 				shm2 = rx_shmc2.buf;
@@ -142,9 +138,7 @@ void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 	if(cnt && pktlen > 0){
 		set_val2[0] = cnt;
 		rx_sem2.array = set_val2;
-		LOG(INFO) << "semavl is " << cnt;
 		if(semctl(rx_shmc2.sem_id,0,SETALL,rx_sem2)==-1){
-			LOG(INFO) << "errrrrr";
 		}
 	}
 }
@@ -152,10 +146,8 @@ void RxShmPort2::WritePkt(bess::PacketBatch *batch)
 void RxShmPort2::ProcessBatch(Context *, bess::PacketBatch *batch)
 {
 	if(batch->cnt() > 0){
-		LOG(INFO) << "process batch";
 		WritePkt(batch);
 	}
-	LOG(INFO) << "process batch";
 }
 
 ADD_MODULE(RxShmPort2,"rx_shm_port2","communication port for shared memory")
