@@ -2,9 +2,8 @@
 
 ## The paper
 Our paper is published in CoNEXT 2020 Student Workshop. <br>
-The program is bellow. <br>
-(The paper will be available on ACM DL around the 11th of December.) <br>
-https://conferences2.sigcomm.org/co-next/2020/#!/program-student <br>
+You can access the paper bellow. <br>
+https://dl.acm.org/doi/10.1145/3426746.3434061 <br>
 
 ## What is this?
 This is a development platform for Ethernet NICs in software, but connected with hardware PCIe elements. <br>
